@@ -16,7 +16,7 @@ warnings.filterwarnings('ignore')
 # ================= 1. 基础配置 =================
 
 st.set_page_config(
-    page_title="ChatBI", 
+    page_title="ChatBI + RAG", 
     layout="wide", 
     page_icon="🧬", 
     initial_sidebar_state="expanded"
@@ -142,13 +142,146 @@ try:
 except:
     FIXED_API_KEY = ""
 
+# 业务数据文件 (Sales Data)
 FIXED_FILE_NAME = "hcmdata.xlsx" 
+# 知识库文件 (Pharma Knowledge Base) - 支持 csv
+RAG_FILE_NAME = "IPM_prd.xlsx - Sheet1.csv"
+
 LOGO_FILE = "logo.png"
 
 PREVIEW_ROW_LIMIT = 500
 EXPORT_ROW_LIMIT = 5000   
 
-# ================= 2. 核心逻辑函数 =================
+# ================= 2. 核心逻辑与类定义 =================
+
+class PharmaRAG:
+    """
+    RAG 引擎：负责医药数据的语义路由与精确检索
+    """
+    def __init__(self, df, client, model_id="gemini-2.0-flash-exp"):
+        self.df = df
+        self.client = client
+        self.model_id = model_id
+
+    def search(self, user_query):
+        """RAG 主入口"""
+        # 1. 语义解析
+        intent_data = self._parse_intent(user_query)
+        if not intent_data:
+            return None, {}
+        
+        # 2. 执行检索
+        search_result = self._execute_code_search(intent_data)
+        
+        # 3. 格式化上下文 (Token 优化)
+        context_text = self._format_result(search_result, intent_data)
+        
+        return context_text, intent_data
+
+    def _parse_intent(self, query):
+        """调用 LLM 进行意图识别和实体提取"""
+        prompt = f"""
+        你是一个医药数据检索专家。请分析用户查询，输出 JSON 格式的检索指令。
+        
+        数据库列说明：
+        - 通用名/成分名：如 "阿达木单抗", "阿莫西林", "血塞通" (L1 层级 - 核心成分)
+        - 商品名：如 "修美乐", "格乐立", "泰中定" (L2 层级 - 市场品牌)
+        - 企业：如 "辉瑞", "恒瑞", "康缘"
+        - 适应症/类别：可能对应 '药品分类一' 或 'ATC' 描述
+        
+        规则：
+        1. search_term: 提取核心实体词。
+        2. target_column: 判断实体属于 ["通用名", "商品名", "企业"] 中的哪一列。如果不确定，优先选 "通用名"。
+        3. intent: 如果用户问"有哪些", "多少个", 标记为 "summary"; 如果问"价格", "规格", "医保", "详情", 标记为 "detail"。
+        
+        用户查询: "{query}"
+        
+        请仅输出 JSON:
+        {{
+            "search_term": "提取的词",
+            "target_column": "通用名", 
+            "intent": "summary"
+        }}
+        """
+        try:
+            # 使用 flash 模型快速路由
+            response = self.client.models.generate_content(
+                model=self.model_id,
+                contents=prompt,
+                config=types.GenerateContentConfig(response_mime_type="application/json")
+            )
+            return json.loads(response.text)
+        except Exception as e:
+            # print(f"Intent parsing error: {e}")
+            return None
+
+    def _execute_code_search(self, intent):
+        """Pandas 精确检索 + 兜底策略"""
+        term = intent.get('search_term', '')
+        col = intent.get('target_column', '通用名')
+        
+        if not term: return pd.DataFrame()
+
+        # 策略 A: 优先列检索 (模糊匹配)
+        col_map = {
+            "通用名": ["通用名", "成分名", "药品名称"],
+            "商品名": ["商品名"],
+            "企业": ["企业", "集团名称"]
+        }
+        target_cols = col_map.get(col, ["通用名", "商品名"]) 
+
+        results = pd.DataFrame()
+        
+        # 1. 定点爆破
+        for c in target_cols:
+            if c in self.df.columns:
+                # 使用 contains 做模糊匹配，case=False 忽略大小写
+                hits = self.df[self.df[c].astype(str).str.contains(term, case=False, regex=False, na=False)]
+                results = pd.concat([results, hits])
+        
+        # 2. 兜底策略 (如果定点没查到，全表核心列扫一遍)
+        if results.empty:
+            fallback_cols = ["通用名", "商品名", "企业", "成分名"]
+            for c in fallback_cols:
+                if c in self.df.columns and c not in target_cols:
+                    hits = self.df[self.df[c].astype(str).str.contains(term, case=False, regex=False, na=False)]
+                    results = pd.concat([results, hits])
+
+        return results.drop_duplicates()
+
+    def _format_result(self, df_res, intent):
+        """根据数据量动态压缩 Token"""
+        if df_res.empty:
+            return "知识库中未找到相关产品数据。"
+        
+        count = len(df_res)
+        intent_type = intent.get('intent', 'summary')
+        
+        # 场景 1: 数据量太大 -> 强制摘要 (Saving Tokens)
+        if count > 10 and intent_type == 'summary':
+            brands = df_res['商品名'].unique().tolist()
+            makers = df_res['企业'].unique().tolist()
+            generics = df_res['通用名'].unique().tolist()
+            
+            # 仅取前20个避免刷屏
+            brands_str = ", ".join([str(x) for x in brands[:20] if pd.notnull(x)])
+            makers_str = ", ".join([str(x) for x in makers[:20] if pd.notnull(x)])
+            
+            return f"""
+            **检索结果摘要 (共找到 {count} 条数据)**:
+            - **相关通用名**: {", ".join(generics[:5])}
+            - **包含品牌**: {brands_str} ...
+            - **包含企业**: {makers_str} ...
+            *注：数据量较大，建议用户通过指定商品名查询详情，或提供更具体的筛选条件。*
+            """
+            
+        # 场景 2: 数据量适中 -> 展示详情
+        else:
+            # 选择核心展示列，去除干扰信息
+            display_cols = ['通用名', '商品名', '规格', '剂型', '企业', '医保执行首年', '最新医保目录', '国采结果', '处方药/OTC']
+            final_cols = [c for c in display_cols if c in df_res.columns]
+            # 转换为 Markdown 表格
+            return df_res[final_cols].to_markdown(index=False)
 
 @st.cache_resource
 def get_client():
@@ -179,7 +312,7 @@ def safe_generate_content(client, model_name, contents, config=None, retries=3):
 @st.cache_data
 def load_data():
     if not os.path.exists(FIXED_FILE_NAME):
-        st.error(f"❌ 找不到文件: {FIXED_FILE_NAME}")
+        # 允许文件不存在，因为用户可能主要想用 RAG
         return None
     try:
         if FIXED_FILE_NAME.endswith('.csv'):
@@ -187,6 +320,7 @@ def load_data():
         else:
             df = pd.read_excel(FIXED_FILE_NAME)
         df.columns = df.columns.str.strip()
+        # 简单的数字清理
         for col in df.columns:
             if any(k in str(col) for k in ['额', '量', 'Sales', 'Qty', '金额']):
                 try:
@@ -197,7 +331,24 @@ def load_data():
                 except: pass
         return df
     except Exception as e:
-        st.error(f"文件读取失败: {e}")
+        st.error(f"销售数据读取失败: {e}")
+        return None
+
+@st.cache_data
+def load_rag_data():
+    """专门加载 RAG 知识库文件"""
+    if not os.path.exists(RAG_FILE_NAME):
+        return None
+    try:
+        # 支持 CSV 或 Excel
+        if RAG_FILE_NAME.endswith('.csv'):
+            df = pd.read_csv(RAG_FILE_NAME)
+        else:
+            df = pd.read_excel(RAG_FILE_NAME)
+        df = df.fillna('') # 填充空值防止 RAG 报错
+        return df
+    except Exception as e:
+        st.error(f"知识库加载失败: {e}")
         return None
 
 def get_history_context(messages, turn_limit=3):
@@ -227,6 +378,7 @@ def get_history_context(messages, turn_limit=3):
     return "\n".join(context_list)
 
 def analyze_time_structure(df):
+    if df is None: return {}
     time_col = None
     for col in df.columns:
         if '年季' in col or 'Quarter' in col or 'Date' in col:
@@ -266,6 +418,7 @@ def analyze_time_structure(df):
     return {"error": "未找到标准年季列"}
 
 def build_metadata(df, time_context):
+    if df is None: return "无销售业务数据"
     info = []
     info.append(f"【时间列名】: {time_context.get('col_name')}")
     info.append(f"【当前MAT】: {time_context.get('mat_list')}")
@@ -326,11 +479,10 @@ def parse_response(text):
     except Exception: pass
     return reasoning, json_data
 
-# ================= 3. 页面渲染函数 (终极修复版) =================
+# ================= 3. 页面渲染函数 =================
 
 def render_header_nav():
     logo_b64 = ""
-    # 确保 logo.png 存在
     if os.path.exists(LOGO_FILE):
         with open(LOGO_FILE, "rb") as f:
             logo_b64 = base64.b64encode(f.read()).decode()
@@ -338,9 +490,6 @@ def render_header_nav():
     logo_img_tag = f'<img src="data:image/png;base64,{logo_b64}" class="nav-logo-img">' if logo_b64 else ""
     user_initials = "PRO"
 
-    # --- 核心修改 ---
-    # 我们在这里定义 HTML，即使你有缩进也没关系
-    # 因为我们在最后会用 .replace 把它压扁
     nav_html = f"""
     <div class="fixed-header-container">
         <div class="nav-left">
@@ -356,17 +505,12 @@ def render_header_nav():
         </div>
     </div>
     """
-    
-    # 🔥 关键一步：移除所有换行符，强制变为单行 HTML
-    # 这样就彻底避免了 Markdown 的缩进误判
     st.markdown(nav_html.replace("\n", ""), unsafe_allow_html=True)
 
 # ================= 4. 主程序执行 =================
 
-# 1. 注入样式
+# 1. 注入样式与导航
 inject_custom_css()
-
-# 2. 渲染顶部导航
 render_header_nav()
 
 if "messages" not in st.session_state:
@@ -384,165 +528,217 @@ if not client:
     st.info("请在 Streamlit 后台 Secrets 中配置 `GENAI_API_KEY`。")
     st.stop()
 
+# 加载数据 (双数据源)
 df = load_data()
+df_pharma = load_rag_data() # 加载知识库
 
-if df is not None:
-    time_context = analyze_time_structure(df)
-    meta_data = build_metadata(df, time_context)
+# 分析时间结构 (仅针对销售数据)
+time_context = analyze_time_structure(df) if df is not None else {}
+meta_data = build_metadata(df, time_context)
+
+# Sidebar
+with st.sidebar:
+    st.markdown("### 🛠️ 控制台")
+    st.caption("状态: 在线 (Active)")
     
-    # Sidebar: 仅保留控制台功能，Logo 已移至顶部
-    with st.sidebar:
-        st.markdown("### 🛠️ 控制台")
-        st.caption("状态: 在线 (Active)")
-        st.info(f"📊 总行数: {len(df):,}")
-        st.info(f"📅 时间跨度: {time_context.get('min_q')} ~ {time_context.get('max_q')}")
-        st.divider()
-        if st.button("🗑️ 清空会话", use_container_width=True):
-            st.session_state.messages = []
-            st.session_state.last_query_draft = ""
-            st.session_state.is_interrupted = False
-            st.rerun()
-
-    # 聊天记录渲染
-    for msg_idx, msg in enumerate(st.session_state.messages):
-        with st.chat_message(msg["role"]):
-            if msg["type"] == "text":
-                st.markdown(msg["content"])
-            elif msg["type"] == "report_block":
-                content = msg["content"]
-                mode = content.get('mode', 'analysis') 
-                
-                if mode == 'simple':
-                    if 'summary' in content:
-                        s = content['summary']
-                        st.markdown(f"""
-                        <div class="summary-box">
-                            <div class="summary-title">⚡ 取数执行协议</div>
-                            <ul class="summary-list">
-                                <li><span class="summary-label">意图</span> {s.get('intent', '-')}</li>
-                                <li><span class="summary-label">指标</span> {s.get('metrics', '-')}</li>
-                                <li><span class="summary-label">逻辑</span> {s.get('logic', '-')}</li>
-                            </ul>
-                        </div>
-                        """, unsafe_allow_html=True)
-                    else:
-                        st.success("✅ 数据提取完成")
-                    
-                    if 'data' in content:
-                        data_payload = content['data']
-                        if isinstance(data_payload, pd.DataFrame):
-                            data_payload = {"查询结果": data_payload}
-                        
-                        for table_name, table_df in data_payload.items():
-                            if len(data_payload) > 1: st.markdown(f"**📄 {table_name}**")
-                            st.dataframe(format_df_for_display(table_df).head(PREVIEW_ROW_LIMIT), use_container_width=True)
-                            csv = table_df.head(EXPORT_ROW_LIMIT).to_csv(index=False).encode('utf-8-sig')
-                            st.download_button(f"📥 导出 ({table_name})", csv, f"{table_name}.csv", "text/csv", key=f"dl_simple_{msg_idx}_{table_name}")
-                            if len(data_payload) > 1: st.markdown("---")
-
-                else:
-                    st.markdown('<div class="step-header">1. 意图深度解析</div>', unsafe_allow_html=True)
-                    st.markdown(content.get('intent', ''))
-                    if 'angles_data' in content:
-                        st.markdown('<div class="step-header">2. 多维分析报告</div>', unsafe_allow_html=True)
-                        for i, angle in enumerate(content['angles_data']):
-                            with st.container():
-                                st.markdown(f"""
-                                <div class="tech-card">
-                                    <div class="angle-title">📐 {angle['title']}</div>
-                                    <div class="angle-desc">{angle['desc']}</div>
-                                </div>
-                                """, unsafe_allow_html=True)
-                                
-                                st.dataframe(format_df_for_display(angle['data']).head(PREVIEW_ROW_LIMIT), use_container_width=True)
-                                
-                                csv = angle['data'].head(EXPORT_ROW_LIMIT).to_csv(index=False).encode('utf-8-sig')
-                                st.download_button(f"📥 下载数据", csv, f"angle_{i}_hist.csv", "text/csv", key=f"dl_hist_{msg_idx}_{i}")
-                                st.markdown(f'<div class="mini-insight">💡 <b>深度解读:</b> {angle["explanation"]}</div>', unsafe_allow_html=True)
-                    st.markdown('<div class="step-header">3. 综合业务洞察</div>', unsafe_allow_html=True)
-                    st.markdown(f'<div class="insight-box">{content.get("insight", "")}</div>', unsafe_allow_html=True)
-
-    # 引导卡片
-    if len(st.session_state.messages) == 0 and not st.session_state.is_interrupted:
-        st.markdown("### 💡 猜你想问")
-        col1, col2, col3 = st.columns(3)
-        q1, q2, q3 = "康缘在各个省份的市场份额多少？", "康缘的哪些产品同比增长较高？", "康缘不同区域的市场表现怎么样？"
-        if col1.button(f"🗺️ **份额分析**\n\n{q1}", use_container_width=True):
-            st.session_state.messages.append({"role": "user", "type": "text", "content": q1}); st.rerun()
-        if col2.button(f"📈 **增长分析**\n\n{q2}", use_container_width=True):
-            st.session_state.messages.append({"role": "user", "type": "text", "content": q2}); st.rerun()
-        if col3.button(f"📊 **区域表现**\n\n{q3}", use_container_width=True):
-            st.session_state.messages.append({"role": "user", "type": "text", "content": q3}); st.rerun()
-
-    # 中止 & 输入
-    if st.session_state.is_interrupted:
-        st.warning("⚠️ 已中止生成。您可以修改刚才的问题并重新发送：")
-        def submit_edit():
-            new_val = st.session_state["edit_input_widget"]
-            if new_val:
-                st.session_state.messages.append({"role": "user", "type": "text", "content": new_val})
-                st.session_state.is_interrupted = False
-                st.session_state.last_query_draft = ""
-        st.text_area("编辑问题", value=st.session_state.last_query_draft, key="edit_input_widget", height=100)
-        st.button("🚀 重新发送", on_click=submit_edit, type="primary")
-
-    if not st.session_state.is_interrupted:
-        if query_input := st.chat_input("🔎 请输入问题..."):
-            st.session_state.last_query_draft = query_input
-            st.session_state.messages.append({"role": "user", "type": "text", "content": query_input})
-            st.rerun()
-
-    # 核心逻辑
-    if st.session_state.messages and st.session_state.messages[-1]["role"] == "user" and not st.session_state.is_interrupted:
-        current_query = st.session_state.messages[-1]["content"]
-        history_context_str = get_history_context(st.session_state.messages, turn_limit=3)
-        stop_btn_placeholder = st.empty()
+    if df is not None:
+        st.info(f"📊 销售数据: {len(df):,} 行")
+    else:
+        st.warning("销售数据未加载")
         
-        if stop_btn_placeholder.button("⏹️ 中止生成", type="primary", use_container_width=True):
-            st.session_state.is_interrupted = True; st.rerun()
+    if df_pharma is not None:
+        st.success(f"📚 知识库: {len(df_pharma):,} 条产品")
+    else:
+        st.warning("知识库未加载")
 
-        with st.chat_message("assistant"):
-            try:
-                # 意图路由
-                intent_type = "analysis" 
-                with st.spinner("🔄 正在识别需求场景..."):
-                    router_prompt = f"""
-                    基于用户当前问题："{current_query}" 以及历史上下文判断用户意图。
-                    【历史上下文】:{history_context_str}
-                    请将其分类为以下三类之一：
-                    1. "simple": 简单取数、排序、排名、计算基础指标。
-                    2. "analysis": 开放式问题，寻求洞察、原因分析、市场格局。
-                    3. "irrelevant": 与数据完全无关的闲聊。
-                    仅输出 JSON: {{"type": "simple" 或 "analysis" 或 "irrelevant"}}
-                    """
-                    router_resp = safe_generate_content(
-                        client, "gemini-2.0-flash", router_prompt, config=types.GenerateContentConfig(response_mime_type="application/json")
-                    )
-                    try: intent_type = json.loads(router_resp.text).get('type', 'analysis')
-                    except: intent_type = 'analysis'
+    st.divider()
+    if st.button("🗑️ 清空会话", use_container_width=True):
+        st.session_state.messages = []
+        st.session_state.last_query_draft = ""
+        st.session_state.is_interrupted = False
+        st.rerun()
 
-                mat_list = time_context.get('mat_list')
-                mat_list_prior = time_context.get('mat_list_prior')
-                is_mat_complete = time_context.get('is_mat_complete')
-                ytd_list = time_context.get('ytd_list')
-                ytd_list_prior = time_context.get('ytd_list_prior')
+# 聊天记录渲染
+for msg_idx, msg in enumerate(st.session_state.messages):
+    with st.chat_message(msg["role"]):
+        if msg["type"] == "text":
+            st.markdown(msg["content"])
+        elif msg["type"] == "report_block":
+            content = msg["content"]
+            mode = content.get('mode', 'analysis') 
+            
+            if mode == 'simple':
+                s = content['summary']
+                st.markdown(f"""
+                <div class="summary-box">
+                    <div class="summary-title">⚡ 取数执行协议</div>
+                    <ul class="summary-list">
+                        <li><span class="summary-label">意图</span> {s.get('intent', '-')}</li>
+                        <li><span class="summary-label">指标</span> {s.get('metrics', '-')}</li>
+                        <li><span class="summary-label">逻辑</span> {s.get('logic', '-')}</li>
+                    </ul>
+                </div>
+                """, unsafe_allow_html=True)
+                
+                if 'data' in content:
+                    data_payload = content['data']
+                    if isinstance(data_payload, pd.DataFrame):
+                        data_payload = {"查询结果": data_payload}
+                    
+                    for table_name, table_df in data_payload.items():
+                        if len(data_payload) > 1: st.markdown(f"**📄 {table_name}**")
+                        st.dataframe(format_df_for_display(table_df).head(PREVIEW_ROW_LIMIT), use_container_width=True)
+                        csv = table_df.head(EXPORT_ROW_LIMIT).to_csv(index=False).encode('utf-8-sig')
+                        st.download_button(f"📥 导出 ({table_name})", csv, f"{table_name}.csv", "text/csv", key=f"dl_simple_{msg_idx}_{table_name}")
+                        if len(data_payload) > 1: st.markdown("---")
 
-                if intent_type == 'irrelevant':
+            else:
+                st.markdown('<div class="step-header">1. 意图深度解析</div>', unsafe_allow_html=True)
+                st.markdown(content.get('intent', ''))
+                if 'angles_data' in content:
+                    st.markdown('<div class="step-header">2. 多维分析报告</div>', unsafe_allow_html=True)
+                    for i, angle in enumerate(content['angles_data']):
+                        with st.container():
+                            st.markdown(f"""
+                            <div class="tech-card">
+                                <div class="angle-title">📐 {angle['title']}</div>
+                                <div class="angle-desc">{angle['desc']}</div>
+                            </div>
+                            """, unsafe_allow_html=True)
+                            
+                            st.dataframe(format_df_for_display(angle['data']).head(PREVIEW_ROW_LIMIT), use_container_width=True)
+                            
+                            csv = angle['data'].head(EXPORT_ROW_LIMIT).to_csv(index=False).encode('utf-8-sig')
+                            st.download_button(f"📥 下载数据", csv, f"angle_{i}_hist.csv", "text/csv", key=f"dl_hist_{msg_idx}_{i}")
+                            st.markdown(f'<div class="mini-insight">💡 <b>深度解读:</b> {angle["explanation"]}</div>', unsafe_allow_html=True)
+                st.markdown('<div class="step-header">3. 综合业务洞察</div>', unsafe_allow_html=True)
+                st.markdown(f'<div class="insight-box">{content.get("insight", "")}</div>', unsafe_allow_html=True)
+
+# 引导卡片
+if len(st.session_state.messages) == 0 and not st.session_state.is_interrupted:
+    st.markdown("### 💡 猜你想问")
+    col1, col2, col3 = st.columns(3)
+    q1, q2, q3 = "康缘在各个省份的市场份额多少？", "查一下泰中定的医保情况", "康缘不同区域的市场表现怎么样？"
+    if col1.button(f"🗺️ **份额分析**\n\n{q1}", use_container_width=True):
+        st.session_state.messages.append({"role": "user", "type": "text", "content": q1}); st.rerun()
+    if col2.button(f"💊 **知识库检索**\n\n{q2}", use_container_width=True):
+        st.session_state.messages.append({"role": "user", "type": "text", "content": q2}); st.rerun()
+    if col3.button(f"📊 **区域表现**\n\n{q3}", use_container_width=True):
+        st.session_state.messages.append({"role": "user", "type": "text", "content": q3}); st.rerun()
+
+# 中止 & 输入
+if st.session_state.is_interrupted:
+    st.warning("⚠️ 已中止生成。您可以修改刚才的问题并重新发送：")
+    def submit_edit():
+        new_val = st.session_state["edit_input_widget"]
+        if new_val:
+            st.session_state.messages.append({"role": "user", "type": "text", "content": new_val})
+            st.session_state.is_interrupted = False
+            st.session_state.last_query_draft = ""
+    st.text_area("编辑问题", value=st.session_state.last_query_draft, key="edit_input_widget", height=100)
+    st.button("🚀 重新发送", on_click=submit_edit, type="primary")
+
+if not st.session_state.is_interrupted:
+    if query_input := st.chat_input("🔎 请输入问题..."):
+        st.session_state.last_query_draft = query_input
+        st.session_state.messages.append({"role": "user", "type": "text", "content": query_input})
+        st.rerun()
+
+# 核心逻辑
+if st.session_state.messages and st.session_state.messages[-1]["role"] == "user" and not st.session_state.is_interrupted:
+    current_query = st.session_state.messages[-1]["content"]
+    history_context_str = get_history_context(st.session_state.messages, turn_limit=3)
+    stop_btn_placeholder = st.empty()
+    
+    if stop_btn_placeholder.button("⏹️ 中止生成", type="primary", use_container_width=True):
+        st.session_state.is_interrupted = True; st.rerun()
+
+    with st.chat_message("assistant"):
+        try:
+            # ================= [RAG 检索层] =================
+            rag_context_str = ""
+            if df_pharma is not None:
+                # 初始化 RAG 引擎
+                rag_engine = PharmaRAG(df_pharma, client, "gemini-2.0-flash-exp")
+                
+                # UI 状态展示
+                status_box = st.status("🔍 正在检索产品知识库...", expanded=False)
+                try:
+                    rag_ctx, rag_meta = rag_engine.search(current_query)
+                    
+                    if rag_ctx and "未找到" not in rag_ctx and "无法解析" not in str(rag_ctx):
+                        status_box.markdown(rag_ctx)
+                        intent_label = rag_meta.get('intent', 'unknown')
+                        term_label = rag_meta.get('search_term', 'unknown')
+                        status_box.update(label=f"✅ 已找到相关产品数据 (关键词: {term_label})", state="complete", expanded=False)
+                        rag_context_str = f"【知识库检索事实】:\n{rag_ctx}\n(请依据此事实回答关于产品属性、医保、厂家的客观问题)"
+                    else:
+                        status_box.update(label="⚠️ 知识库无直接匹配，使用销售数据或通用知识", state="complete")
+                except Exception as e:
+                    status_box.update(label=f"❌ RAG 检索出错: {e}", state="error")
+            
+            # ================= [意图路由层] =================
+            intent_type = "analysis" 
+            with st.spinner("🔄 正在识别需求场景..."):
+                router_prompt = f"""
+                基于用户当前问题："{current_query}" 以及历史上下文判断用户意图。
+                
+                【额外上下文 - 必须优先参考】
+                {rag_context_str}
+                
+                【历史上下文】:
+                {history_context_str}
+                
+                请将其分类为以下三类之一：
+                1. "simple": 简单取数、排序、排名、计算基础指标。
+                2. "analysis": 开放式问题，寻求洞察、原因分析、市场格局。
+                3. "irrelevant": 与数据完全无关的闲聊。
+                
+                仅输出 JSON: {{"type": "simple" 或 "analysis" 或 "irrelevant"}}
+                """
+                router_resp = safe_generate_content(
+                    client, "gemini-2.0-flash", router_prompt, config=types.GenerateContentConfig(response_mime_type="application/json")
+                )
+                try: intent_type = json.loads(router_resp.text).get('type', 'analysis')
+                except: intent_type = 'analysis'
+
+            # 销售数据上下文准备 (如果有)
+            mat_list = time_context.get('mat_list', [])
+            mat_list_prior = time_context.get('mat_list_prior', [])
+            is_mat_complete = time_context.get('is_mat_complete', False)
+            ytd_list = time_context.get('ytd_list', [])
+            ytd_list_prior = time_context.get('ytd_list_prior', [])
+
+            if intent_type == 'irrelevant':
+                if rag_context_str:
+                    # 如果 RAG 查到了东西，但被判为无关(可能是误判)，直接用 RAG 回答
+                    st.markdown(rag_context_str)
+                    st.session_state.messages.append({"role": "assistant", "type": "text", "content": rag_context_str})
+                else:
                     st.warning("⚠️ 当前提问不在数据覆盖范围内")
                     st.session_state.messages.append({"role": "assistant", "type": "text", "content": "抱歉，当前提问与数据内容无关。"})
 
-                # ================= [Simple Mode] =================
-                elif intent_type == 'simple':
+            # ================= [Simple Mode] =================
+            elif intent_type == 'simple':
+                if df is None and not rag_context_str:
+                    st.error("请先上传销售数据文件")
+                else:
                     with st.spinner("⚡ 正在解析意图并生成代码..."):
                         simple_prompt = f"""
                         你是一位 Pandas 数据处理专家。用户需求："{current_query}"
-                        【元数据】{meta_data}
+                        
+                        【知识库信息 (客观事实)】
+                        {rag_context_str}
+                        
+                        【销售数据元数据】
+                        {meta_data}
+                        
                         【历史记录】{history_context_str}
                         【时间上下文】MAT: {mat_list}, YTD: {ytd_list}
                         
-                        【关键指令 - 这里的规则必须遵守】
-                        1. **唯一数据源**：环境中只有 `df`。不要假设存在 `df_sales`, `df_hainan` 等变量。
-                        2. **必须自行筛选**：如果需要特定维度（如海南、2023年），必须在代码中显式筛选。例如：`df_sub = df[df['省份']=='海南']`。
+                        【关键指令】
+                        1. **数据源**：环境中存在 `df` (销售数据)。如果问题仅涉及产品属性（如医保、厂家），请忽略 df，直接在 summary 中回答 RAG 的信息。
+                        2. **代码生成**：如果需要查询销售额/量，请生成代码。`df` 是唯一变量。
                         3. **结果赋值**：将最终结果字典赋值给 `results`。
                         4. **严禁绘图**。
                         
@@ -556,7 +752,7 @@ if df is not None:
                         )
                         simple_json = json.loads(simple_resp.text)
                         
-                        # 纯净的执行上下文，防止 AI 幻觉
+                        # 纯净的执行上下文
                         execution_context = {
                             'df': df, 
                             'pd': pd, 'np': np, 
@@ -564,15 +760,28 @@ if df is not None:
                             'current_mat': mat_list, 'mat_list': mat_list, 'prior_mat': mat_list_prior,
                             'mat_list_prior': mat_list_prior, 'ytd_list': ytd_list, 'ytd_list_prior': ytd_list_prior
                         }
-                        exec(simple_json['code'], execution_context)
                         
+                        has_code_run = False
+                        if df is not None and simple_json.get('code'):
+                            try:
+                                exec(simple_json['code'], execution_context)
+                                has_code_run = True
+                            except Exception as e:
+                                st.warning(f"代码执行微调: {e}")
+
                         final_results = execution_context.get('results')
                         if not final_results and execution_context.get('result') is not None:
                             final_results = {"查询结果": execution_context.get('result')}
                         
-                        if final_results:
+                        s = simple_json.get('summary', {})
+                        
+                        # 如果没有运行代码（纯知识库问题），直接展示意图和 RAG 结果
+                        if not has_code_run and rag_context_str:
+                            st.markdown(rag_context_str)
+                            st.session_state.messages.append({"role": "assistant", "type": "text", "content": rag_context_str})
+                        
+                        elif final_results:
                             formatted_results = {k: normalize_result(v) for k, v in final_results.items()}
-                            s = simple_json.get('summary', {})
                             
                             st.markdown(f"""
                             <div class="summary-box">
@@ -599,23 +808,29 @@ if df is not None:
                             st.error("未提取到数据")
                             st.session_state.messages.append({"role": "assistant", "type": "text", "content": "未提取到有效数据。"})
 
-                # ================= [Analysis Mode] =================
+            # ================= [Analysis Mode] =================
+            else:
+                if df is None:
+                    st.error("请先上传销售数据文件")
                 else:
                     with st.spinner("🧠 正在拆解问题..."):
                         prompt_plan = f"""
                         你是一位医药行业 BI 专家。请将问题："{current_query}" 拆解为 2-5 个分析角度。
-                        结合时间动态（MAT/YTD）和竞争视角进行分析。
                         
-                        【元数据】{meta_data}
+                        【知识库信息 (优先参考)】
+                        {rag_context_str}
+                        
+                        【销售数据元数据】
+                        {meta_data}
+                        
                         【历史记录】{history_context_str}
                         【时间上下文】MAT: {mat_list}, YTD: {ytd_list}
                         
-                        【关键指令 - 这里的规则必须遵守】
-                        0. **数据源唯一入口**：环境中**只有**一个名为 `df` 的 Pandas DataFrame。
-                        1. **严禁使用未定义变量**：绝对不要直接使用 `df_hainan`, `df_2023` 这种变量，除非你在代码中第一行先定义了它（例如：`df_sub = df[df['省份']=='海南']`）。
-                        2. **严禁绘图**：不要生成 fig, plt, sns 代码。
-                        3. **结果赋值**：最终结果必须赋值给变量 `result`。
-                        4. **语言**：中文。
+                        【关键指令】
+                        0. **数据源**：环境中只有 `df`。
+                        1. **严禁绘图**：不要生成 fig, plt, sns 代码。
+                        2. **结果赋值**：最终结果必须赋值给变量 `result`。
+                        3. **语言**：中文。
                         
                         输出 JSON: {{ "intent_analysis": "意图深度解析(Markdown)", "angles": [ {{"title": "分析角度标题", "description": "描述", "code": "df_sub = df[...]\nresult = df_sub..."}} ] }}
                         """
@@ -662,11 +877,14 @@ if df is not None:
                                         st.download_button(f"📥 下载", csv, f"angle_{i}.csv", "text/csv", key=f"dl_{i}")
                                         
                                         with st.spinner(f"⚡ 深度解读..."):
-                                            # 修复：使用 to_string() 替代 to_markdown() 避免依赖报错
                                             mini_prompt = f"""
                                             对数据进行深度解读（200字内）。
+                                            
+                                            【背景知识】
+                                            {rag_context_str}
+                                            
                                             数据预览：\n{res_df.head(20).to_string()}
-                                            要求：提炼趋势/异常，结合业务含义，语言专业。
+                                            要求：提炼趋势/异常，结合背景知识和业务含义，语言专业。
                                             """
                                             mini_resp = safe_generate_content(client, "gemini-2.0-flash", mini_prompt)
                                             explanation = mini_resp.text
@@ -688,6 +906,10 @@ if df is not None:
                                 final_prompt = f"""
                                 问题: "{current_query}"
                                 各角度发现: {all_findings}
+                                
+                                【知识库事实】
+                                {rag_context_str}
+                                
                                 生成最终洞察 (Markdown)。严禁建议，仅陈述事实。
                                 """
                                 resp_final = safe_generate_content(client, "gemini-3-pro-preview", final_prompt)
@@ -703,11 +925,7 @@ if df is not None:
                                 })
                     else:
                         st.error("无法生成分析方案")
-            except Exception as e:
-                st.error(f"系统错误: {e}")
-            finally:
-                stop_btn_placeholder.empty()
-
-
-
-
+        except Exception as e:
+            st.error(f"系统错误: {e}")
+        finally:
+            stop_btn_placeholder.empty()
