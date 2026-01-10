@@ -28,15 +28,15 @@ try:
 except:
     FIXED_API_KEY = ""
 
-# --- [修改点] 文件配置：双表模式 ---
-# 销售事实表 (Fact Table): 必须包含 '药品编码', '销售额' 等
+# --- [核心配置] 双表文件路径 ---
+# 1. 销售事实表 (Fact Table): 必须包含 '药品编码', '销售额' 等业务数据
 FILE_FACT_SALES = "fact.csv"       
-# 产品维度表 (Dim Table): 必须包含 '药品编码', '通用名', '商品名', '医保属性' 等
+# 2. 产品维度表 (Dim Table): 必须包含 '药品编码', '通用名', '商品名', '医保属性' 等基础信息
 FILE_DIM_PRODUCT = "ipmdata.csv"   
 
 LOGO_FILE = "logo.png"
 
-# --- [修改点] 核心关联键 ---
+# --- [核心配置] 关联键 (两张表必须都有这个列) ---
 JOIN_KEY = "药品编码"
 
 PREVIEW_ROW_LIMIT = 500
@@ -44,12 +44,11 @@ EXPORT_ROW_LIMIT = 5000
 
 # ================= 2. 核心类与辅助函数 =================
 
-# --- [新增] RAG 引擎类 ---
 class PharmaRAG:
     """
-    RAG 引擎：基于产品维度表 (df_product) 进行语义检索
+    RAG 引擎：专门负责在产品维度表 (Dim) 中检索静态信息
     """
-    def __init__(self, df_product, client, model_id="gemini-2.0-flash-exp"):
+    def __init__(self, df_product, client, model_id="gemini-3-pro-preiview"):
         self.df = df_product
         self.client = client
         self.model_id = model_id
@@ -70,17 +69,16 @@ class PharmaRAG:
         return context_text, intent_data
 
     def _parse_intent(self, query):
-        """调用 LLM 进行意图识别"""
-        # 获取列名辅助判断
+        """调用 LLM 进行意图识别，判断用户是在查哪个产品"""
         cols = list(self.df.columns) if self.df is not None else []
         prompt = f"""
-        你是一个医药数据检索专家。请分析用户查询，输出 JSON 格式的检索指令。
+        你是一个医药数据检索专家。请分析用户查询，输出 JSON 检索指令。
         
-        知识库(产品表)列包含: {cols}
+        知识库(产品表)表头: {cols}
         
         规则：
         1. search_term: 提取核心实体词 (如 '阿莫西林', '修美乐', '恒瑞').
-        2. target_column: 判断实体属于哪一列 (如 '通用名', '商品名', '企业'). 如果不确定，优先选 '通用名'.
+        2. target_column: 判断实体属于哪一列 (如 '通用名', '商品名', '企业'). 如果不确定，优先选 '通用名' 或 '商品名'.
         3. intent: 'summary'(概览) 或 'detail'(详情).
         
         用户查询: "{query}"
@@ -106,15 +104,15 @@ class PharmaRAG:
 
         results = pd.DataFrame()
         
-        # 尝试在目标列和可能的备选列中搜索
+        # 智能列匹配：如果 LLM 猜的列不存在，尝试在常见列中查找
         target_cols = [col]
-        # 如果列名不存在，尝试模糊匹配常见的列名
         if col not in self.df.columns:
             target_cols = [c for c in self.df.columns if '名' in c or '企业' in c]
         
         for c in target_cols:
             if c in self.df.columns:
                 try:
+                    # 使用包含匹配 (contains)
                     hits = self.df[self.df[c].astype(str).str.contains(term, case=False, regex=False, na=False)]
                     results = pd.concat([results, hits])
                 except: pass
@@ -122,13 +120,13 @@ class PharmaRAG:
         return results.drop_duplicates()
 
     def _format_result(self, df_res, intent):
-        """格式化输出"""
+        """格式化输出，重点保留关联键"""
         if df_res.empty:
             return "知识库中未找到相关产品数据。"
         
         count = len(df_res)
         
-        # 必须包含 JOIN_KEY 以便后续关联
+        # [关键] 必须包含 JOIN_KEY，以便 LLM 知道用什么ID去查销量
         base_cols = [JOIN_KEY, '通用名', '商品名', '规格', '企业', '医保执行首年', '最新医保目录']
         final_cols = [c for c in base_cols if c in df_res.columns]
         
@@ -138,18 +136,17 @@ class PharmaRAG:
             return f"""
             **检索到 {count} 条产品记录**:
             - **包含品牌**: {", ".join([str(x) for x in brands[:10] if pd.notnull(x)])}...
-            - **注意**: 这是一个产品维度的检索结果。
+            - **提示**: 这是一个产品维度的检索结果，包含了药品编码。
             """
         else:
             return df_res[final_cols].to_markdown(index=False)
 
-# --- 样式注入 (保留原样) ---
+# --- 样式注入 (保留您原有的 VI) ---
 def inject_custom_css():
     st.markdown("""
         <style>
         @import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;600;700&family=JetBrains+Mono:wght@400;500&display=swap');
         
-        /* ================= VI 变量定义 (医药魔方风格) ================= */
         :root {
             --pc-primary-blue: #005ADE;
             --pc-dark-blue: #004099;
@@ -256,26 +253,24 @@ def safe_generate_content(client, model_name, contents, config=None, retries=3):
                     continue
             raise e
 
-# --- [修改点] 数据加载：双表模式 ---
+# --- [关键修改] 双表数据加载器 ---
 @st.cache_data
 def load_dual_data():
-    """加载双表数据：Fact (销售) & Dim (产品)"""
+    """并行加载销售事实表和产品维度表，并处理关联键类型"""
     data = {"sales": None, "product": None}
     
-    # 1. 加载销售事实表 (Fact)
+    # 1. 加载销售表 (Fact)
     if os.path.exists(FILE_FACT_SALES):
         try:
             if FILE_FACT_SALES.endswith('.csv'): df_s = pd.read_csv(FILE_FACT_SALES)
             else: df_s = pd.read_excel(FILE_FACT_SALES)
-            
-            # 清理列名
             df_s.columns = df_s.columns.str.strip()
             
-            # [关键] 强制关联键为字符串
+            # [关键步骤] 强制转换关联键为字符串，防止 int 与 str 无法关联
             if JOIN_KEY in df_s.columns:
                 df_s[JOIN_KEY] = df_s[JOIN_KEY].astype(str).str.strip()
             
-            # 数字列清理
+            # 自动清洗数字列
             for col in df_s.columns:
                 if any(k in str(col) for k in ['额', '量', 'Sales', 'Qty', '金额']):
                     try:
@@ -287,15 +282,14 @@ def load_dual_data():
             data["sales"] = df_s
         except Exception as e: st.error(f"销售表加载失败: {e}")
 
-    # 2. 加载产品维度表 (Dim)
+    # 2. 加载产品表 (Dim)
     if os.path.exists(FILE_DIM_PRODUCT):
         try:
             if FILE_DIM_PRODUCT.endswith('.csv'): df_p = pd.read_csv(FILE_DIM_PRODUCT)
             else: df_p = pd.read_excel(FILE_DIM_PRODUCT)
-            
             df_p.columns = df_p.columns.str.strip()
             
-            # [关键] 强制关联键为字符串
+            # [关键步骤] 同样强制转换关联键
             if JOIN_KEY in df_p.columns:
                 df_p[JOIN_KEY] = df_p[JOIN_KEY].astype(str).str.strip()
             
@@ -372,17 +366,18 @@ def analyze_time_structure(df):
     return {"error": "未找到标准年季列"}
 
 def build_metadata(df_sales, df_product, time_context):
+    """构建包含双表表头的元数据，防止LLM幻觉"""
     info = []
-    info.append(f"【Fact表: 销售数据】 行数: {len(df_sales) if df_sales is not None else 0}")
+    info.append(f"【Fact表: 销售数据 (变量名 df_sales)】 行数: {len(df_sales) if df_sales is not None else 0}")
     if df_sales is not None:
+        info.append(f"- 包含列 (请严格使用): {list(df_sales.columns)}")
         info.append(f"- 时间列: {time_context.get('col_name')} (当前MAT: {time_context.get('mat_list')})")
-        info.append(f"- 列清单: {list(df_sales.columns)}")
     
-    info.append(f"【Dim表: 产品数据】 行数: {len(df_product) if df_product is not None else 0}")
+    info.append(f"【Dim表: 产品数据 (变量名 df_product)】 行数: {len(df_product) if df_product is not None else 0}")
     if df_product is not None:
-        info.append(f"- 列清单: {list(df_product.columns)}")
+        info.append(f"- 包含列 (请严格使用): {list(df_product.columns)}")
         
-    info.append(f"【关联键】: {JOIN_KEY} (必须用于连接两表)")
+    info.append(f"【核心关联键】: {JOIN_KEY} (用于 pd.merge 的 on 参数)")
     return "\n".join(info)
 
 def normalize_result(res):
@@ -482,14 +477,14 @@ if not client:
     st.info("请在 Streamlit 后台 Secrets 中配置 `GENAI_API_KEY`。")
     st.stop()
 
-# --- [修改点] 加载双表数据 ---
+# --- [数据加载] 调用双表加载器 ---
 raw_data = load_dual_data()
 df_sales = raw_data["sales"]     # 事实表
 df_product = raw_data["product"] # 维度表
 
 # 分析时间结构 (仅基于销售数据)
 time_context = analyze_time_structure(df_sales) if df_sales is not None else {}
-# 构建双表元数据
+# 构建双表元数据 (包含所有列名)
 meta_data = build_metadata(df_sales, df_product, time_context)
 
 # Sidebar
@@ -612,7 +607,7 @@ if st.session_state.messages and st.session_state.messages[-1]["role"] == "user"
 
     with st.chat_message("assistant"):
         try:
-            # --- [修改点] RAG 优先介入 ---
+            # --- [Step 1] RAG 优先介入，检索 Dim 表 ---
             rag_context_str = ""
             if df_product is not None:
                 rag_engine = PharmaRAG(df_product, client, "gemini-2.0-flash-exp")
@@ -632,7 +627,7 @@ if st.session_state.messages and st.session_state.messages[-1]["role"] == "user"
                 except Exception as e:
                     status_box.update(label=f"❌ RAG 检索出错: {e}", state="error")
             
-            # 意图路由
+            # --- [Step 2] 意图路由 ---
             intent_type = "analysis" 
             with st.spinner("🔄 正在识别需求场景..."):
                 router_prompt = f"""
@@ -685,7 +680,8 @@ if st.session_state.messages and st.session_state.messages[-1]["role"] == "user"
                         【指令】
                         1. **关联查询**: 如果用户按产品名查询销量，先从 `df_product` 找到对应 `{JOIN_KEY}`，或用 `pd.merge` 关联两表。
                         2. **结果赋值**: 将结果字典赋值给 `results`。
-                        3. **严禁绘图**。
+                        3. **变量使用**: 必须严格使用 `df_sales` 和 `df_product`，严禁使用未定义的 `df`。
+                        4. **严禁绘图**。
                         
                         输出 JSON: {{ 
                             "summary": {{ "intent": "...", "metrics": "...", "logic": "..." }}, 
@@ -697,7 +693,7 @@ if st.session_state.messages and st.session_state.messages[-1]["role"] == "user"
                         )
                         simple_json = json.loads(simple_resp.text)
                         
-                        # --- [修改点] 注入双表环境 ---
+                        # --- [关键步骤] 注入双表执行环境 ---
                         execution_context = {
                             'df_sales': df_sales,
                             'df_product': df_product,
@@ -770,7 +766,7 @@ if st.session_state.messages and st.session_state.messages[-1]["role"] == "user"
                         
                         【指令】
                         1. **多维分析**: 利用 `pd.merge` 将产品属性（如医保、剂型）关联到销售数据进行分析。
-                        2. **代码要求**: 赋值给 `result`。
+                        2. **代码要求**: 赋值给 `result`。严禁使用未定义的变量 `df`。
                         3. **严禁绘图**。
                         
                         输出 JSON: {{ "intent_analysis": "...", "angles": [ {{"title": "...", "description": "...", "code": "..."}} ] }}
@@ -795,7 +791,7 @@ if st.session_state.messages and st.session_state.messages[-1]["role"] == "user"
                                 """, unsafe_allow_html=True)
                                 
                                 try:
-                                    # --- [修改点] 注入双表环境 ---
+                                    # --- [关键步骤] 注入双表执行环境 ---
                                     execution_context = {
                                         'df_sales': df_sales,
                                         'df_product': df_product,
