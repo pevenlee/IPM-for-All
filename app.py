@@ -16,19 +16,19 @@ warnings.filterwarnings('ignore')
 # ================= 1. 基础配置与视觉体系 (VI) =================
 
 st.set_page_config(
-    page_title="ChatBI Pro", 
+    page_title="ChatBI", 
     layout="wide", 
     page_icon="🧬", 
     initial_sidebar_state="expanded"
 )
 
 # --- 模型配置 (根据您的要求映射) ---
-MODEL_FAST = "gemini-2.0-flash-exp"       # 用于路由、单点洞察 (Flash 2.0)
-MODEL_SMART = "gemini-1.5-pro"            # 用于写代码、拆解分析、最终总结 (3 Pro)
+MODEL_FAST = "gemini-2.0-flash"       # 用于路由、单点洞察 (Flash 2.0)
+MODEL_SMART = "gemini-3-pro-preview"            # 用于写代码、拆解分析、最终总结 (3 Pro)
 
 # --- 文件配置 ---
-FILE_FACT_SALES = "fact.csv"       
-FILE_DIM_PRODUCT = "ipmdata.csv"   
+FILE_FACT_SALES = "fact.xlsx"       
+FILE_DIM_PRODUCT = "ipmdata.xlsx"   
 LOGO_FILE = "logo.png"
 JOIN_KEY = "药品编码"
 
@@ -542,3 +542,4 @@ if st.session_state.messages and st.session_state.messages[-1]["role"] == "user"
             msg = "抱歉，这个问题似乎与当前的医药销售数据无关。"
             st.info(msg)
             st.session_state.messages.append({"role": "assistant", "type": "text", "content": msg})
+
