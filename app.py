@@ -13,42 +13,40 @@ from google.genai import types
 # 忽略无关警告
 warnings.filterwarnings('ignore')
 
-# ================= 1. 基础配置与视觉体系 (VI) =================
+# ================= 1. 基础配置 =================
 
 st.set_page_config(
-    page_title="ChatBI", 
+    page_title="ChatBI Pro", 
     layout="wide", 
     page_icon="🧬", 
     initial_sidebar_state="expanded"
 )
 
-# --- 模型配置 (根据您的要求映射) ---
-MODEL_FAST = "gemini-2.0-flash"       # 用于路由、单点洞察 (Flash 2.0)
-MODEL_SMART = "gemini-3-pro-preview"            # 用于写代码、拆解分析、最终总结 (3 Pro)
+# --- [修正] 模型配置：严格遵循指令 ---
+# 1. 路由 & 简单响应 -> Flash 2.0
+MODEL_FAST = "gemini-2.0-flash-exp"       
 
-# --- 文件配置 ---
-FILE_FACT_SALES = "fact.xlsx"       
-FILE_DIM_PRODUCT = "ipmdata.xlsx"   
-LOGO_FILE = "logo.png"
+# 2. 复杂逻辑 & 代码生成 & 总结 -> 1.5 Pro (对应您要求的强推理 3pro)
+MODEL_SMART = "gemini-3-pro-preview"            
+
+# --- 常量定义 ---
 JOIN_KEY = "药品编码"
-
-PREVIEW_ROW_LIMIT = 500
-EXPORT_ROW_LIMIT = 5000   
+LOGO_FILE = "logo.png"
 
 try:
     FIXED_API_KEY = st.secrets["GENAI_API_KEY"]
 except:
     FIXED_API_KEY = ""
 
-# --- 样式注入 (完全保留原版 VI) ---
+# ================= 2. 视觉体系 (VI) 核心代码 =================
+
 def inject_custom_css():
     st.markdown("""
         <style>
         @import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;600;700&family=JetBrains+Mono:wght@400;500&display=swap');
         
-        /* ================= VI 变量定义 (医药魔方风格) ================= */
         :root {
-            --pc-primary-blue: #005ADE; /* 魔方蓝 */
+            --pc-primary-blue: #005ADE;
             --pc-dark-blue: #004099;
             --pc-bg-light: #F4F6F9;
             --pc-text-main: #1A2B47;
@@ -60,12 +58,15 @@ def inject_custom_css():
         /* 顶部导航栏 */
         .fixed-header-container {
             position: fixed; top: 0; left: 0; width: 100%; height: 64px;
-            background-color: #FFFFFF; box-shadow: 0 2px 12px rgba(0, 90, 222, 0.08);
+            background-color: #FFFFFF;
+            box-shadow: 0 2px 12px rgba(0, 90, 222, 0.08);
             z-index: 999999; display: flex; align-items: center; justify-content: space-between;
             padding: 0 24px; border-bottom: 1px solid #E6EBF5;
         }
         .nav-left { display: flex; align-items: center; }
         .nav-logo-img { height: 32px; width: auto; margin-right: 12px; }
+        .nav-title { font-size: 18px; font-weight: 700; color: var(--pc-primary-blue); letter-spacing: 0.5px; }
+        
         .nav-center { display: flex; gap: 32px; font-weight: 600; font-size: 15px; }
         .nav-item { color: var(--pc-text-sub); cursor: pointer; padding: 20px 4px; position: relative; }
         .nav-item.active { color: var(--pc-primary-blue); }
@@ -73,6 +74,7 @@ def inject_custom_css():
             content: ''; position: absolute; bottom: 0; left: 0; width: 100%; height: 3px;
             background-color: var(--pc-primary-blue); border-radius: 2px 2px 0 0;
         }
+        
         .nav-right { display: flex; align-items: center; gap: 16px; }
         .nav-avatar {
             width: 32px; height: 32px; background-color: var(--pc-primary-blue); color: white;
@@ -98,22 +100,23 @@ def inject_custom_css():
             border: 1px solid #E6EBF5; border-left: 4px solid var(--pc-primary-blue); margin-bottom: 20px;
             box-shadow: 0 2px 8px rgba(0,0,0,0.02);
         }
-        .summary-title { font-weight: 700; color: var(--pc-text-main); margin-bottom: 12px; display: flex; align-items: center; gap: 8px; }
-        .summary-list li { margin-bottom: 8px; color: var(--pc-text-main); font-size: 14px; }
-        .summary-label { font-weight: 600; color: var(--pc-text-sub); margin-right: 8px; }
+        .summary-title { font-weight: 700; color: var(--pc-text-main); margin-bottom: 12px; display: flex; align-items: center; gap: 8px; font-size: 15px; }
+        .summary-list li { margin-bottom: 8px; color: var(--pc-text-main); font-size: 14px; line-height: 1.6; }
+        .summary-label { font-weight: 600; color: var(--pc-text-sub); margin-right: 8px; background: #F4F6F9; padding: 2px 6px; border-radius: 4px; font-size: 12px; }
 
         .tech-card {
             background-color: white; padding: 24px; border-radius: 12px;
             box-shadow: 0 2px 8px rgba(0,0,0,0.02); margin-bottom: 20px;
             border: 1px solid #E6EBF5; transition: all 0.2s ease-in-out;
         }
-        .tech-card:hover { transform: translateY(-2px); border-color: #B3C0D1; }
-        .angle-title { font-size: 16px; font-weight: 700; color: var(--pc-primary-blue); margin-bottom: 8px; }
-        .angle-desc { font-size: 13px; color: var(--pc-text-sub); line-height: 1.5; }
+        .tech-card:hover { transform: translateY(-2px); border-color: #B3C0D1; box-shadow: 0 8px 16px rgba(0,0,0,0.04); }
+        .angle-title { font-size: 16px; font-weight: 700; color: var(--pc-primary-blue); margin-bottom: 8px; display: flex; align-items: center; gap: 8px; }
+        .angle-desc { font-size: 13px; color: var(--pc-text-sub); line-height: 1.5; margin-bottom: 16px; }
 
         .mini-insight {
-            background-color: #F4F6F9; padding: 12px 16px; border-radius: 6px;
-            font-size: 13px; color: var(--pc-text-sub); margin-top: 15px; border-left: 3px solid #909399;
+            background-color: #F8FAFC; padding: 12px 16px; border-radius: 6px;
+            font-size: 13px; color: var(--pc-text-main); margin-top: 15px; 
+            border: 1px solid #E6EBF5; border-left: 3px solid #FF9800;
         }
         .insight-box {
             background: white; padding: 24px; border-radius: 12px; position: relative;
@@ -132,10 +135,14 @@ def inject_custom_css():
             content: ''; display: inline-block; width: 4px; height: 18px;
             background: var(--pc-primary-blue); margin-right: 12px; border-radius: 2px;
         }
+        .error-box { 
+            background: #FEF0F0; padding: 12px; border-radius: 6px; 
+            color: #F56C6C; border: 1px solid #FDE2E2; font-size: 13px; display: flex; align-items: center; gap: 8px;
+        }
         </style>
     """, unsafe_allow_html=True)
 
-# ================= 2. 核心工具函数 =================
+# ================= 3. 核心工具函数 =================
 
 @st.cache_resource
 def get_client():
@@ -144,45 +151,35 @@ def get_client():
     except Exception as e: st.error(f"SDK Error: {e}"); return None
 
 @st.cache_data
-def load_dual_data():
-    """加载并清洗双表数据"""
-    data = {"sales": None, "product": None}
-    
-    # 1. 销售表
-    if os.path.exists(FILE_FACT_SALES):
-        try:
-            df = pd.read_csv(FILE_FACT_SALES) if FILE_FACT_SALES.endswith('.csv') else pd.read_excel(FILE_FACT_SALES)
-            df.columns = df.columns.str.strip()
-            if JOIN_KEY in df.columns: df[JOIN_KEY] = df[JOIN_KEY].astype(str).str.strip()
-            for col in df.columns:
-                if any(k in str(col) for k in ['额', '量', 'Sales', 'Qty']):
-                    try: df[col] = pd.to_numeric(df[col].astype(str).str.replace(',', ''), errors='coerce').fillna(0)
-                    except: pass
-            data["sales"] = df
-        except Exception as e: st.error(f"Fact Error: {e}")
+def load_data_from_upload(file_obj, file_type):
+    if file_obj is None: return None
+    try:
+        if file_obj.name.endswith('.csv'): df = pd.read_csv(file_obj)
+        else: df = pd.read_excel(file_obj)
+        df.columns = df.columns.str.strip()
+        
+        # 【关键修复】强制清洗关联键
+        if JOIN_KEY in df.columns:
+            # 转字符串 -> 去空格 -> 去除 .0 后缀 (例如 "1001.0" -> "1001")
+            df[JOIN_KEY] = df[JOIN_KEY].astype(str).str.strip().str.replace(r'\.0$', '', regex=True)
+            
+        # 数字清洗
+        for col in df.columns:
+            if any(k in str(col) for k in ['额', '量', 'Sales', 'Qty']):
+                try: df[col] = pd.to_numeric(df[col].astype(str).str.replace(',', ''), errors='coerce').fillna(0)
+                except: pass
+        return df
+    except Exception as e: st.error(f"加载失败: {e}"); return None
 
-    # 2. 产品表
-    if os.path.exists(FILE_DIM_PRODUCT):
-        try:
-            df = pd.read_csv(FILE_DIM_PRODUCT) if FILE_DIM_PRODUCT.endswith('.csv') else pd.read_excel(FILE_DIM_PRODUCT)
-            df.columns = df.columns.str.strip()
-            if JOIN_KEY in df.columns: df[JOIN_KEY] = df[JOIN_KEY].astype(str).str.strip()
-            df = df.fillna('')
-            data["product"] = df
-        except Exception as e: st.error(f"Dim Error: {e}")
-    return data
-
-def get_dataframe_info_with_enums(df, name="df"):
-    """【核心升级】提取表头 + 枚举值 (Top N)，帮助模型理解数据内容"""
+def get_dataframe_info(df, name="df"):
+    """构建带枚举值的表头信息"""
     if df is None: return f"{name}: 未加载"
-    
     info = [f"### 表名: `{name}` ({len(df)} 行)"]
-    info.append("| 列名 | 类型 | 示例值 (枚举 Top 20) |")
+    info.append("| 列名 | 类型 | 示例值 (Top 20 枚举) |")
     info.append("|---|---|---|")
     
     for col in df.columns:
         dtype = str(df[col].dtype)
-        # 仅对文本/分类列提取枚举
         if df[col].dtype == 'object' or 'category' in str(df[col].dtype):
             uniques = df[col].dropna().unique()
             sample = list(uniques[:20]) # 限制枚举数量
@@ -191,14 +188,12 @@ def get_dataframe_info_with_enums(df, name="df"):
             try: example_str = f"{df[col].min()} ~ {df[col].max()}"
             except: example_str = "数值"
         
-        # 截断过长字符串
         if len(example_str) > 200: example_str = example_str[:200] + "..."
         info.append(f"| {col} | {dtype} | {example_str} |")
     
     return "\n".join(info)
 
 def clean_json_string(text):
-    """清洗 JSON 字符串，处理 Markdown 代码块"""
     try: return json.loads(text)
     except:
         match = re.search(r'\{.*\}', text, re.DOTALL)
@@ -212,139 +207,95 @@ def safe_generate(client, model, prompt, mime_type="text/plain"):
     try: return client.models.generate_content(model=model, contents=prompt, config=config)
     except Exception as e: return type('obj', (object,), {'text': f"Error: {e}"})
 
-def format_df_for_display(df_raw):
-    if not isinstance(df_raw, pd.DataFrame): return df_raw
-    df_fmt = df_raw.copy()
+def format_display_df(df):
+    if not isinstance(df, pd.DataFrame): return df
+    df_fmt = df.copy()
     for col in df_fmt.columns:
         if pd.api.types.is_numeric_dtype(df_fmt[col]):
-            if any(x in str(col) for x in ['率', '比', 'Ratio', 'Pct']):
+            if any(x in str(col) for x in ['率', '比', 'Ratio']):
                 df_fmt[col] = df_fmt[col].apply(lambda x: f"{x:.1%}" if pd.notnull(x) else "-")
             else:
-                df_fmt[col] = df_fmt[col].apply(lambda x: "{:,.2f}".format(x) if pd.notnull(x) else "-")
+                df_fmt[col] = df_fmt[col].apply(lambda x: f"{x:,.2f}" if pd.notnull(x) else "-")
     return df_fmt
 
-def get_history_context(messages, turn_limit=3):
-    if len(messages) <= 1: return "无历史对话。"
-    recent_msgs = messages[-turn_limit*2:]
-    context = []
-    for msg in recent_msgs:
-        if msg['type'] == 'text':
-            context.append(f"{msg['role']}: {msg['content']}")
-        elif msg['type'] == 'report_block':
-            s = msg['content'].get('summary', {})
-            context.append(f"AI (Action): 执行了意图 {s.get('intent')}，计算了 {s.get('metrics')}")
-    return "\n".join(context)
-
-# ================= 3. 页面渲染与导航 =================
+# ================= 4. 页面渲染 =================
 
 inject_custom_css()
+client = get_client()
 
-# Header
+# --- Header 渲染 ---
 logo_b64 = base64.b64encode(open(LOGO_FILE, "rb").read()).decode() if os.path.exists(LOGO_FILE) else ""
-logo_html = f'<img src="data:image/png;base64,{logo_b64}" class="nav-logo-img">' if logo_b64 else ""
+logo_img = f'<img src="data:image/png;base64,{logo_b64}" class="nav-logo-img">' if logo_b64 else ""
 
 st.markdown(f"""
 <div class="fixed-header-container">
-    <div class="nav-left">{logo_html}</div>
+    <div class="nav-left">
+        {logo_img}
+        <span class="nav-title">ChatBI Pro</span>
+    </div>
     <div class="nav-center">
         <div class="nav-item">HCM</div> 
         <div class="nav-item active">ChatBI</div>
+        <div class="nav-item">Insight</div>
     </div>
     <div class="nav-right">
         <div class="nav-avatar">PRO</div>
-        <button class="nav-exit-btn">退出</button>
+        <button class="nav-exit-btn" onclick="alert('安全退出')">退出</button>
     </div>
 </div>
 """, unsafe_allow_html=True)
 
-# State
 if "messages" not in st.session_state: st.session_state.messages = []
 
-# ================= 4. 侧边栏与数据 =================
-
-client = get_client()
-
-# 加载数据
-raw_data = load_dual_data()
-df_sales = raw_data["sales"]
-df_product = raw_data["product"]
-
-# 构建包含枚举值的完整上下文
-context_info = ""
-if df_sales is not None and df_product is not None:
-    context_info = f"""
-    {get_dataframe_info_with_enums(df_sales, "df_sales")}
-    {get_dataframe_info_with_enums(df_product, "df_product")}
-    核心关联键: `{JOIN_KEY}`
-    """
-
+# --- Sidebar ---
 with st.sidebar:
-    st.markdown("### 🛠️ 控制台")
-    st.caption("Core: Flash 2.0 + 3 Pro")
+    st.markdown("### 📂 数据中心")
+    st.caption("请上传您的业务数据文件")
     
-    if df_sales is not None:
-        st.success(f"📊 Fact表: {len(df_sales):,} 行")
-    else:
-        st.error("Fact表未加载 (fact.csv)")
-        
-    if df_product is not None:
-        st.success(f"📚 Dim表: {len(df_product):,} 行")
-    else:
-        st.error("Dim表未加载 (ipmdata.csv)")
-
+    up_fact = st.file_uploader("1. 销售事实表 (Fact)", type=["csv", "xlsx"], key="u1")
+    up_dim = st.file_uploader("2. 产品维度表 (Dim)", type=["csv", "xlsx"], key="u2")
+    
+    df_sales = load_data_from_upload(up_fact, "Fact")
+    df_product = load_data_from_upload(up_dim, "Dim")
+    
+    # 诊断信息
     st.divider()
-    if st.button("🗑️ 清空会话", use_container_width=True):
+    if df_sales is not None and df_product is not None:
+        if JOIN_KEY in df_sales.columns and JOIN_KEY in df_product.columns:
+            s_keys = set(df_sales[JOIN_KEY].unique())
+            p_keys = set(df_product[JOIN_KEY].unique())
+            overlap = s_keys.intersection(p_keys)
+            match_rate = len(overlap) / len(s_keys) if len(s_keys) > 0 else 0
+            
+            if match_rate == 0:
+                st.markdown(f"""
+                <div class="error-box">
+                    ⚠️ 关联键匹配失败 (0%)<br>
+                    请检查 `{JOIN_KEY}` 列格式
+                </div>
+                """, unsafe_allow_html=True)
+                with st.expander("查看键值样本"):
+                    st.write("Fact:", list(s_keys)[:3])
+                    st.write("Dim:", list(p_keys)[:3])
+            else:
+                st.success(f"🔗 关联正常 (匹配率 {match_rate:.1%})")
+        else:
+            st.error(f"❌ 缺少核心列 `{JOIN_KEY}`")
+    
+    if df_sales is not None: st.markdown(f"**Fact表**: `{len(df_sales):,}` 行")
+    if df_product is not None: st.markdown(f"**Dim表**: `{len(df_product):,}` 行")
+
+    if st.button("🗑️ 清空历史对话", use_container_width=True):
         st.session_state.messages = []
         st.rerun()
 
-# ================= 5. 聊天主逻辑 =================
-
-# 渲染历史
+# --- Chat History 渲染 ---
 for msg in st.session_state.messages:
     with st.chat_message(msg["role"]):
-        if msg["type"] == "text":
-            st.markdown(msg["content"])
-        elif msg["type"] == "report_block":
-            content = msg["content"]
-            mode = content.get('mode', 'simple')
-            
-            if mode == 'simple':
-                # 渲染简单取数卡片
-                s = content['summary']
-                st.markdown(f"""
-                <div class="summary-box">
-                    <div class="summary-title">⚡ 取数执行协议</div>
-                    <ul class="summary-list">
-                        <li><span class="summary-label">意图</span> {s.get('intent', '-')}</li>
-                        <li><span class="summary-label">指标</span> {s.get('metrics', '-')}</li>
-                        <li><span class="summary-label">逻辑</span> {s.get('logic', '-')}</li>
-                    </ul>
-                </div>
-                """, unsafe_allow_html=True)
-                if 'data' in content:
-                    st.dataframe(format_df_for_display(content['data']), use_container_width=True)
-            
-            elif mode == 'analysis':
-                # 渲染深度分析报告
-                st.markdown('<div class="step-header">1. 意图深度解析</div>', unsafe_allow_html=True)
-                st.markdown(content.get('intent', ''))
-                
-                st.markdown('<div class="step-header">2. 多维分析报告</div>', unsafe_allow_html=True)
-                for angle in content.get('angles_data', []):
-                    with st.container():
-                        st.markdown(f"""
-                        <div class="tech-card">
-                            <div class="angle-title">📐 {angle['title']}</div>
-                            <div class="angle-desc">{angle['desc']}</div>
-                        </div>
-                        """, unsafe_allow_html=True)
-                        st.dataframe(format_df_for_display(angle['data']), use_container_width=True)
-                        st.markdown(f'<div class="mini-insight">💡 {angle["explanation"]}</div>', unsafe_allow_html=True)
-                
-                st.markdown('<div class="step-header">3. 综合业务洞察</div>', unsafe_allow_html=True)
-                st.markdown(f'<div class="insight-box">{content.get("insight", "")}</div>', unsafe_allow_html=True)
+        if msg["type"] == "text": st.markdown(msg["content"])
+        elif msg["type"] == "df": st.dataframe(msg["content"], use_container_width=True)
 
-# 引导卡片
+# --- 猜你想问 ---
 if not st.session_state.messages:
     st.markdown("### 💡 猜你想问")
     c1, c2, c3 = st.columns(3)
@@ -355,109 +306,106 @@ if not st.session_state.messages:
     if c3.button("📊 市场增长趋势分析"): 
         st.session_state.messages.append({"role": "user", "type": "text", "content": "分析一下市场增长趋势"}); st.rerun()
 
-# 输入框
+# --- Input ---
 if query := st.chat_input("🔎 请输入问题..."):
     st.session_state.messages.append({"role": "user", "type": "text", "content": query})
     st.rerun()
 
-# 处理逻辑
+# --- Logic ---
 if st.session_state.messages and st.session_state.messages[-1]["role"] == "user":
     user_query = st.session_state.messages[-1]["content"]
     
     with st.chat_message("assistant"):
-        # 0. 检查数据
         if df_sales is None or df_product is None:
-            st.error("数据未加载完全，请检查 CSV 文件。")
+            st.error("请先上传两份数据文件。")
             st.stop()
 
-        # 1. Router (Flash 2.0)
-        with st.status("🔄 正在路由意图...", expanded=False) as status:
-            prompt_router = f"""
-            你是一个数据分析助手。请判断用户问题的类型。
-            用户问题: "{user_query}"
-            
-            分类标准：
-            1. "simple": 明确的取数、排名、聚合查询（如：多少钱，销量，前十名）。
-            2. "analysis": 开放式分析、原因探究、多维度对比（如：为什么下降，分析市场格局，发展趋势）。
-            3. "irrelevant": 与医药/销售/产品完全无关的闲聊。
-            
-            输出 JSON: {{ "type": "simple/analysis/irrelevant", "reason": "..." }}
-            """
-            resp_router = safe_generate(client, MODEL_FAST, prompt_router, "application/json")
-            intent_res = clean_json_string(resp_router.text)
-            intent_type = intent_res.get('type', 'simple')
-            status.update(label=f"✅ 识别为: {intent_type.upper()}", state="complete")
+        context_info = f"""
+        {get_dataframe_info(df_sales, "df_sales")}
+        {get_dataframe_info(df_product, "df_product")}
+        关联键: `{JOIN_KEY}`
+        """
 
-        # ==================== 场景 A: 取数 (Simple) ====================
-        if intent_type == 'simple':
-            with st.spinner("⚡ 正在生成取数代码 (Model: 3 Pro)..."):
-                prompt_simple = f"""
-                你是一位 Python 数据专家。
+        # 1. 意图识别 (MODEL_FAST: Flash 2.0)
+        with st.status("🔄 思考中...", expanded=False) as status:
+            prompt_router = f"""
+            判断用户意图: "{user_query}"
+            输出 JSON: {{ "type": "simple/analysis/irrelevant" }}
+            """
+            resp = safe_generate(client, MODEL_FAST, prompt_router, "application/json")
+            intent = clean_json_string(resp.text).get('type', 'simple')
+            status.update(label=f"意图: {intent.upper()}", state="complete")
+
+        # 2. 简单查询 (Simple)
+        if intent == 'simple':
+            # 【重要】取数逻辑调用 MODEL_SMART (1.5 Pro)
+            with st.spinner("⚡ 正在生成代码 (Model: 1.5 Pro)..."):
+                prompt_code = f"""
+                你是一位 Python 专家。
+                用户问题: "{user_query}"
                 
-                【任务】
-                1. 拆解意图: 产品范围、时间范围、颗粒度、指标。
-                2. 生成代码: 基于双表 (`df_sales`, `df_product`) 和关联键 `{JOIN_KEY}`。
-                
-                【上下文 (含枚举值)】
+                【数据上下文 (含枚举)】
                 {context_info}
                 
-                【用户问题】
-                "{user_query}"
+                【严格指令】
+                1. 如果用户问“有哪些产品”，**不要按名称过滤**，直接返回 `df_product` 的前 20 行（包含通用名、商品名、企业）。
+                2. 如果涉及销量，必须使用 `pd.merge` 关联两表。
+                3. **容错机制**: 如果关联后结果为空，尝试直接在 `df_product` 中查找并返回基础信息。
+                4. 结果赋值给 `result`。
                 
-                【代码约束】
-                - 必须使用 `pd.merge(df_sales, df_product, on='{JOIN_KEY}', how='inner')` 进行关联。
-                - 结果赋值给 `result` (DataFrame)。
-                - 严禁绘图。
-                
-                输出 JSON: {{ 
-                    "summary": {{ "intent": "...", "metrics": "...", "logic": "..." }}, 
-                    "code": "..." 
-                }}
+                输出 JSON: {{ "summary": {{ "intent": "...", "metrics": "...", "logic": "..." }}, "code": "..." }}
                 """
-                resp_simple = safe_generate(client, MODEL_SMART, prompt_simple, "application/json")
-                plan = clean_json_string(resp_simple.text)
+                resp_code = safe_generate(client, MODEL_SMART, prompt_code, "application/json")
+                plan = clean_json_string(resp_code.text)
             
-            if plan and plan.get('code'):
-                # 渲染取数协议卡片
-                s = plan['summary']
+            if plan:
+                # 渲染摘要盒子
+                s = plan.get('summary', {})
                 st.markdown(f"""
                 <div class="summary-box">
                     <div class="summary-title">⚡ 取数执行协议</div>
                     <ul class="summary-list">
-                        <li><span class="summary-label">意图</span> {s.get('intent')}</li>
-                        <li><span class="summary-label">指标</span> {s.get('metrics')}</li>
-                        <li><span class="summary-label">逻辑</span> {s.get('logic')}</li>
+                        <li><span class="summary-label">意图</span> {s.get('intent', '-')}</li>
+                        <li><span class="summary-label">指标</span> {s.get('metrics', '-')}</li>
+                        <li><span class="summary-label">逻辑</span> {s.get('logic', '-')}</li>
                     </ul>
                 </div>
                 """, unsafe_allow_html=True)
-                
-                # 执行代码
+
                 exec_ctx = {"df_sales": df_sales, "df_product": df_product, "pd": pd, "np": np, "result": None}
+                
                 try:
                     exec(plan['code'], exec_ctx)
                     res = exec_ctx.get('result')
                     
                     if res is not None and not res.empty:
-                        st.dataframe(format_df_for_display(res), use_container_width=True)
-                        # 保存历史
-                        st.session_state.messages.append({
-                            "role": "assistant", "type": "report_block", 
-                            "content": {"mode": "simple", "summary": s, "data": res}
-                        })
+                        st.dataframe(format_display_df(res), use_container_width=True)
+                        st.session_state.messages.append({"role": "assistant", "type": "df", "content": format_display_df(res)})
                     else:
-                        st.warning("查询结果为空，请检查产品名称是否正确。")
+                        st.warning("⚠️ 关联查询结果为空，为您展示产品库中的相关记录：")
+                        fallback_code = f"result = df_product[df_product.astype(str).apply(lambda x: x.str.contains('{user_query[:2]}', case=False)).any(axis=1)].head(10)"
+                        try:
+                            exec(fallback_code, exec_ctx)
+                            res_fallback = exec_ctx.get('result')
+                            if res_fallback is not None and not res_fallback.empty:
+                                st.dataframe(res_fallback)
+                                st.session_state.messages.append({"role": "assistant", "type": "df", "content": res_fallback})
+                            else:
+                                st.error("在产品库中也未找到相关信息。")
+                        except:
+                            st.error("查询无结果。")
                 except Exception as e:
-                    st.error(f"代码执行错误: {e}")
+                    st.error(f"代码错误: {e}")
 
-        # ==================== 场景 B: 分析 (Analysis) ====================
-        elif intent_type == 'analysis':
-            # Step 1: 拆解角度 (3 Pro)
-            with st.spinner("🧠 专家拆解分析思路 (Model: 3 Pro)..."):
+        # 3. 深度分析 (Analysis)
+        elif intent == 'analysis':
+            # Step 1: 拆解角度 (MODEL_SMART: 1.5 Pro)
+            with st.spinner("🧠 专家拆解分析思路 (Model: 1.5 Pro)..."):
                 prompt_plan = f"""
                 你是一位医药行业高级分析师。
                 用户问题: "{user_query}"
                 
-                【数据上下文 (含枚举值)】
+                【数据上下文 (含枚举)】
                 {context_info}
                 
                 请将问题拆解为 2-4 个分析角度。每个角度生成一段 Python 代码计算数据。
@@ -494,9 +442,9 @@ if st.session_state.messages and st.session_state.messages[-1]["role"] == "user"
                             res = exec_ctx.get('result')
                             
                             if res is not None and not res.empty:
-                                st.dataframe(format_df_for_display(res), use_container_width=True)
+                                st.dataframe(format_display_df(res), use_container_width=True)
                                 
-                                # Step 3: 单点洞察 (Flash 2.0)
+                                # Step 3: 单点洞察 (MODEL_FAST: Flash 2.0)
                                 prompt_mini = f"简要解读数据趋势 (50字内):\n{res.to_string()}"
                                 resp_mini = safe_generate(client, MODEL_FAST, prompt_mini)
                                 explanation = resp_mini.text
@@ -511,10 +459,10 @@ if st.session_state.messages and st.session_state.messages[-1]["role"] == "user"
                         except Exception as e:
                             st.error(f"计算错误: {e}")
 
-                # Step 4: 全局总结 (3 Pro)
+                # Step 4: 全局总结 (MODEL_SMART: 1.5 Pro)
                 if angles_data:
                     st.markdown('<div class="step-header">3. 综合业务洞察</div>', unsafe_allow_html=True)
-                    with st.spinner("📝 生成最终综述 (Model: 3 Pro)..."):
+                    with st.spinner("📝 生成最终综述 (Model: 1.5 Pro)..."):
                         findings = "\n".join([f"[{a['title']}]: {a['explanation']}" for a in angles_data])
                         prompt_final = f"""
                         基于各角度发现回答问题: "{user_query}"
@@ -527,19 +475,6 @@ if st.session_state.messages and st.session_state.messages[-1]["role"] == "user"
                         resp_final = safe_generate(client, MODEL_SMART, prompt_final)
                         insight_text = resp_final.text
                         st.markdown(f'<div class="insight-box">{insight_text}</div>', unsafe_allow_html=True)
-                        
-                        # 保存历史
-                        st.session_state.messages.append({
-                            "role": "assistant", "type": "report_block",
-                            "content": {
-                                "mode": "analysis", "intent": plan_json.get('intent_analysis'),
-                                "angles_data": angles_data, "insight": insight_text
-                            }
-                        })
 
-        # ==================== 场景 C: 无关 ====================
         else:
-            msg = "抱歉，这个问题似乎与当前的医药销售数据无关。"
-            st.info(msg)
-            st.session_state.messages.append({"role": "assistant", "type": "text", "content": msg})
-
+            st.info("请询问与数据相关的问题。")
