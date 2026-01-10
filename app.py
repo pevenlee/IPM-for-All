@@ -30,9 +30,9 @@ except:
 
 # --- [核心配置] 双表文件路径 ---
 # 1. 销售事实表 (Fact Table): 必须包含 '药品编码', '销售额' 等业务数据
-FILE_FACT_SALES = "fact.csv"       
+FILE_FACT_SALES = "fact.xlsx"       
 # 2. 产品维度表 (Dim Table): 必须包含 '药品编码', '通用名', '商品名', '医保属性' 等基础信息
-FILE_DIM_PRODUCT = "ipmdata.csv"   
+FILE_DIM_PRODUCT = "ipmdata.xlsx"   
 
 LOGO_FILE = "logo.png"
 
@@ -860,3 +860,4 @@ if st.session_state.messages and st.session_state.messages[-1]["role"] == "user"
             st.error(f"系统错误: {e}")
         finally:
             stop_btn_placeholder.empty()
+
