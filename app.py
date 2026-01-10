@@ -143,7 +143,7 @@ except:
     FIXED_API_KEY = ""
 
 # 业务数据文件 (Sales Data)
-FIXED_FILE_NAME = "hcmdata.xlsx" 
+FIXED_FILE_NAME = "ipmdata.xlsx" 
 # 知识库文件 (Pharma Knowledge Base) - 支持 csv
 RAG_FILE_NAME = "IPM_prd.xlsx - Sheet1.csv"
 
@@ -929,3 +929,4 @@ if st.session_state.messages and st.session_state.messages[-1]["role"] == "user"
             st.error(f"系统错误: {e}")
         finally:
             stop_btn_placeholder.empty()
+
