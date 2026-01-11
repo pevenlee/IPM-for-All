@@ -24,7 +24,7 @@ st.set_page_config(
 
 # --- 模型配置 ---
 MODEL_FAST = "gemini-2.0-flash"           # 路由 & 简单洞察
-MODEL_SMART = "gemini-3-pro-preview"      # 写代码 & 深度分析
+MODEL_SMART = "gemini-3-pro-preview"            # 写代码 & 深度分析 (Pro 上下文更长，适合带历史记录)
 
 # --- 常量定义 ---
 JOIN_KEY = "药品编码"
@@ -56,9 +56,6 @@ def inject_custom_css():
 
         .stApp { background-color: var(--pc-bg-light); font-family: 'Inter', "Microsoft YaHei", sans-serif; color: var(--pc-text-main); }
 
-        /* =================================================================
-           1. 侧边栏按钮终极修复
-           ================================================================= */
         header[data-testid="stHeader"] {
             background-color: transparent !important;
             pointer-events: none !important; 
@@ -98,9 +95,6 @@ def inject_custom_css():
         [data-testid="stDecoration"] { display: none !important; }
         [data-testid="stToolbar"] { display: none !important; }
 
-        /* =================================================================
-           2. 自定义导航栏样式
-           ================================================================= */
         .fixed-header-container {
             position: fixed; top: 0; left: 0; width: 100%; height: 64px;
             background-color: #FFFFFF;
@@ -282,6 +276,36 @@ def safe_check_empty(df):
     try: return normalize_result(df).empty
     except: return True
 
+# --- 新增：历史记录上下文提取函数 ---
+def get_history_context(limit=5):
+    """提取最近 n 轮对话（不包含当前最新的 User Query）"""
+    # session_state.messages 包含当前刚插入的 query，所以取 :-1
+    history_msgs = st.session_state.messages[:-1] 
+    # 只取最后 limit * 2 条（一问一答）
+    relevant_msgs = history_msgs[-(limit * 2):]
+    
+    context_str = ""
+    if not relevant_msgs:
+        return "无历史对话"
+        
+    for msg in relevant_msgs:
+        role = "用户" if msg["role"] == "user" else "AI助手"
+        content = msg["content"]
+        
+        # 如果是 DataFrame，简化描述，避免 Token 爆炸
+        if msg["type"] == "df":
+            try:
+                # 尝试描述表结构
+                df_preview = msg["content"]
+                cols = list(df_preview.columns)
+                content = f"[已展示数据表: {len(df_preview)}行, 列: {cols}]"
+            except:
+                content = "[已展示数据表]"
+        
+        context_str += f"{role}: {content}\n"
+    
+    return context_str
+
 # ================= 4. 页面渲染 =================
 
 inject_custom_css()
@@ -351,7 +375,7 @@ for msg in st.session_state.messages:
         if msg["type"] == "text": st.markdown(msg["content"])
         elif msg["type"] == "df": st.dataframe(msg["content"], use_container_width=True)
 
-# --- 猜你想问 (逻辑修复：直接处理) ---
+# --- 猜你想问 ---
 if not st.session_state.messages:
     st.markdown("### 💡 猜你想问")
     c1, c2, c3 = st.columns(3)
@@ -375,6 +399,9 @@ if query:
 if st.session_state.messages and st.session_state.messages[-1]["role"] == "user":
     user_query = st.session_state.messages[-1]["content"]
     
+    # 获取历史上下文
+    history_str = get_history_context(limit=5)
+
     with st.chat_message("assistant"):
         if df_sales is None or df_product is None:
             st.error(f"请确保根目录下存在 {FILE_FACT} 和 {FILE_DIM}")
@@ -386,21 +413,25 @@ if st.session_state.messages and st.session_state.messages[-1]["role"] == "user"
         关联键: `{JOIN_KEY}`
         """
 
-        # 1. 意图识别
+        # 1. 意图识别 (带历史记忆)
         with st.status("🔄 思考中...", expanded=False) as status:
             prompt_router = f"""
-            你是一个精准的意图分类专家。请判断用户问题属于以下哪一类：
+            你是一个精准的意图分类专家。请基于用户问题和历史对话判断意图。
             
-            用户问题: "{user_query}"
+            【历史对话】
+            {history_str}
+            
+            【当前用户问题】
+            "{user_query}"
             
             【分类标准】
             1. simple (简单取数): 
                - 包含明确的“提取”、“查询”、“列出”、“多少”、“数据”等关键词。
-               - 即使涉及多个字段（如：销售额、销量、时间），只要目的是获取原始数据或统计表，都算 simple。
+               - 用户基于上一轮结果进行简单筛选（如“只看华东的”）。
                
             2. analysis (深度分析): 
                - 询问“为什么”、“原因”、“趋势”、“表现如何”、“评价”。
-               - 需要多维度拆解、归因分析或生成文字报告。
+               - 需要多维度拆解、归因分析。
                
             3. irrelevant (无关): 非业务数据问题。
             
@@ -410,28 +441,36 @@ if st.session_state.messages and st.session_state.messages[-1]["role"] == "user"
             
             if "Error" in resp.text:
                 status.update(label="API 错误", state="error")
-                st.error(f"API 调用失败: {resp.text}。请检查配额或 Key。")
+                st.error(f"API 调用失败: {resp.text}")
                 st.stop()
                 
             intent = clean_json_string(resp.text).get('type', 'simple')
             status.update(label=f"意图: {intent.upper()}", state="complete")
 
-        # 2. 简单查询 (优化摘要字段)
+        # 2. 简单查询
         if intent == 'simple':
             with st.spinner(f"⚡ 正在生成代码 ({MODEL_SMART})..."):
                 prompt_code = f"""
-                你是一位医药行业的 Python 专家。
-                用户问题: "{user_query}"
+                你是一位 Python 专家。
+                
+                【历史对话】(用于理解指代，如"它"、"上述产品")
+                {history_str}
+                
+                【当前用户问题】
+                "{user_query}"
+                
                 【数据上下文】 {context_info}
+                
                 【指令】 
-                1. 严格按用户要求提取字段。如果用户要“提取”，请展示数据表。
-                2. 使用 `pd.merge` 关联两表。
-                3. 若无结果返回空表；结果存为 `result`。
+                1. 严格按用户要求提取字段。
+                2. 使用 `pd.merge` 关联两表 (除非用户只查单表)。
+                3. 如果用户指代上一步结果（如“只看其中销售额大于100的”），请重新生成查询代码来复现该结果并添加过滤条件。
+                4. 结果存为 `result`。
                 
                 【摘要生成规则 (Summary)】
                 - scope (范围): 数据的筛选范围，如 "2024年", "华东地区", "全量"。
                 - metrics (指标): 用户查询的核心指标，如 "销售额", "销量"。
-                - logic (加工逻辑): 简述筛选和计算步骤（如“按产品汇总销售额”），**严禁**提及“表关联”、“Left Join”、“Merge”等技术术语。
+                - logic (加工逻辑): 简述筛选和计算步骤，严禁提及“表关联”、“Merge”等技术术语。
                 
                 输出 JSON: {{ "summary": {{ "intent": "简单取数", "scope": "...", "metrics": "...", "logic": "..." }}, "code": "..." }}
                 """
@@ -440,7 +479,6 @@ if st.session_state.messages and st.session_state.messages[-1]["role"] == "user"
             
             if plan:
                 s = plan.get('summary', {})
-                # UI 优化：顺序调整为 意图 -> 范围 -> 指标 -> 加工逻辑
                 st.markdown(f"""
                 <div class="summary-box">
                     <div class="summary-title">⚡ 取数执行协议</div>
@@ -466,7 +504,7 @@ if st.session_state.messages and st.session_state.messages[-1]["role"] == "user"
                         st.dataframe(formatted_df, use_container_width=True)
                         st.session_state.messages.append({"role": "assistant", "type": "df", "content": formatted_df})
                     else:
-                        st.warning("⚠️ 关联结果为空，尝试模糊搜索...")
+                        st.warning("⚠️ 结果为空，尝试模糊搜索...")
                         fallback_code = f"result = df_product[df_product.astype(str).apply(lambda x: x.str.contains('{user_query[:2]}', case=False)).any(axis=1)].head(10)"
                         try:
                             exec(fallback_code, exec_ctx)
@@ -487,8 +525,16 @@ if st.session_state.messages and st.session_state.messages[-1]["role"] == "user"
         elif intent == 'analysis':
             with st.spinner(f"🧠 专家拆解分析思路 ({MODEL_SMART})..."):
                 prompt_plan = f"""
-                你是一位医药行业高级分析师。用户问题: "{user_query}"
+                你是一位医药行业高级分析师。
+                
+                【历史对话】
+                {history_str}
+                
+                【当前用户问题】
+                "{user_query}"
+                
                 【数据上下文】 {context_info}
+                
                 请拆解 2-4 个分析角度。
                 输出 JSON: {{ "intent_analysis": "...", "angles": [ {{ "title": "...", "desc": "...", "code": "..." }} ] }}
                 """
@@ -537,5 +583,3 @@ if st.session_state.messages and st.session_state.messages[-1]["role"] == "user"
         else:
             st.info("请询问数据相关问题。")
             st.session_state.messages.append({"role": "assistant", "type": "text", "content": "请询问数据相关问题。"})
-
-
