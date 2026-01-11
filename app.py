@@ -420,7 +420,7 @@ if st.session_state.messages and st.session_state.messages[-1]["role"] == "user"
         if intent == 'simple':
             with st.spinner(f"⚡ 正在生成代码 ({MODEL_SMART})..."):
                 prompt_code = f"""
-                你是一位 Python 专家。
+                你是一位医药行业的 Python 专家。
                 用户问题: "{user_query}"
                 【数据上下文】 {context_info}
                 【指令】 
@@ -537,4 +537,5 @@ if st.session_state.messages and st.session_state.messages[-1]["role"] == "user"
         else:
             st.info("请询问数据相关问题。")
             st.session_state.messages.append({"role": "assistant", "type": "text", "content": "请询问数据相关问题。"})
+
 
