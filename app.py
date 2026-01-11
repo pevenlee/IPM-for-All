@@ -31,8 +31,8 @@ JOIN_KEY = "药品编码"
 LOGO_FILE = "logo.png"
 
 # --- 本地文件名定义 ---
-FILE_FACT = "fact.xlsx"  
-FILE_DIM = "ipmdata.xlsx"    
+FILE_FACT = "fact.xlsx"      # 销售事实表
+FILE_DIM = "ipmdata.xlsx"    # 产品维度表
 
 try:
     FIXED_API_KEY = st.secrets["GENAI_API_KEY"]
@@ -260,7 +260,6 @@ def format_display_df(df):
     return df_fmt
 
 def normalize_result(res):
-    """万能结果转换：将 dict/list/series 等转为 DataFrame"""
     if res is None: return pd.DataFrame()
     if isinstance(res, pd.DataFrame): return res
     if isinstance(res, pd.Series): return res.to_frame(name='数值').reset_index()
@@ -275,14 +274,12 @@ def normalize_result(res):
     return pd.DataFrame([str(res)], columns=['Result'])
 
 def safe_check_empty(df):
-    """安全检查是否为空"""
     if df is None: return True
     if isinstance(df, pd.DataFrame): return df.empty
     try: return normalize_result(df).empty
     except: return True
 
 def get_history_context(limit=5):
-    """提取历史对话上下文"""
     history_msgs = st.session_state.messages[:-1] 
     relevant_msgs = history_msgs[-(limit * 2):]
     context_str = ""
@@ -301,7 +298,6 @@ def get_history_context(limit=5):
     return context_str
 
 def render_protocol_card(summary):
-    """通用摘要卡片渲染"""
     st.markdown(f"""
     <div class="summary-box">
         <div class="summary-title">⚡ 执行协议</div>
@@ -448,7 +444,6 @@ if st.session_state.messages and st.session_state.messages[-1]["role"] == "user"
             intent = clean_json_string(resp.text).get('type', 'simple')
             status.update(label=f"意图: {intent.upper()}", state="complete")
 
-        # 共享上下文
         shared_ctx = {"df_sales": df_sales, "df_product": df_product, "pd": pd, "np": np}
 
         # 2. 简单查询
@@ -471,7 +466,7 @@ if st.session_state.messages and st.session_state.messages[-1]["role"] == "user"
                 3. **重要**: 确保所有使用的变量（如 market_share）都在代码中明确定义。不要使用未定义的变量。
                 4. **绝对禁止**导入 IPython 或使用 display() 函数。
                 5. 禁止使用 df.columns = [...] 强行改名，请使用 df.rename()。
-                6. 进行字符串匹配时，请务必使用 `case=False` 和 `na=False`。
+                6. **避免 'ambiguous' 错误**：如果 index name 与 column name 冲突，请在 reset_index() 前先使用 `df.index.name = None` 或重命名索引。
                 7. 结果存为 `result`。
                 
                 【摘要生成规则 (Summary)】
@@ -534,10 +529,11 @@ if st.session_state.messages and st.session_state.messages[-1]["role"] == "user"
                 
                 请拆解 2-4 个分析角度。每个角度的代码块将被依次执行。
                 **注意**：
-                1. 代码块之间共享上下文。如果角度2需要用到角度1计算的变量（如 market_share），这是允许的。但请确保变量名一致。
+                1. 代码块之间共享上下文。如果角度2需要用到角度1计算的变量，确保变量名一致。
                 2. **绝对禁止**导入 IPython 或使用 display() 函数。
-                3. 禁止使用 df.columns = [...] 强行改名，请使用 df.rename()。
-                4. 在代码开头，先检查前置依赖的变量是否存在，例如 `if 'df_filtered' not in locals(): result = pd.DataFrame()`。
+                3. **避免 'ambiguous' 错误**：如果 index name 与 column name 冲突，请在 reset_index() 前先使用 `df.index.name = None` 或重命名索引。
+                4. **避免 'Length mismatch' 错误**：禁止使用 `df.columns = [...]` 强行改名，必须使用 `df.rename(columns={...})`。
+                5. 在代码开头，先检查前置依赖的变量是否存在，例如 `if 'df_filtered' not in locals(): result = pd.DataFrame()`。
                 
                 输出 JSON: {{ "intent_analysis": "...", "angles": [ {{ "title": "...", "desc": "...", "summary": {{ "intent": "...", "scope": "...", "metrics": "...", "logic": "..." }}, "code": "..." }} ] }}
                 """
