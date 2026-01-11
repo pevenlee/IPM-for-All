@@ -22,12 +22,9 @@ st.set_page_config(
     initial_sidebar_state="expanded"
 )
 
-# --- [修正] 模型配置：严格遵循指令 ---
-# 1. 路由 & 简单响应 -> Flash 2.0
-MODEL_FAST = "gemini-2.0-flash-exp"       
-
-# 2. 复杂逻辑 & 代码生成 & 总结 -> 1.5 Pro (对应您要求的强推理 3pro)
-MODEL_SMART = "gemini-3-pro-preview"            
+# --- 模型配置 (严格遵循您的指令) ---
+MODEL_FAST = "gemini-2.0-flash-exp"       # 路由 & 简单洞察
+MODEL_SMART = "gemini-1.5-pro"            # 写代码 & 深度分析
 
 # --- 常量定义 ---
 JOIN_KEY = "药品编码"
@@ -38,7 +35,7 @@ try:
 except:
     FIXED_API_KEY = ""
 
-# ================= 2. 视觉体系 (VI) 核心代码 =================
+# ================= 2. 视觉体系 (VI) =================
 
 def inject_custom_css():
     st.markdown("""
@@ -55,7 +52,6 @@ def inject_custom_css():
 
         .stApp { background-color: var(--pc-bg-light); font-family: 'Inter', "Microsoft YaHei", sans-serif; color: var(--pc-text-main); }
 
-        /* 顶部导航栏 */
         .fixed-header-container {
             position: fixed; top: 0; left: 0; width: 100%; height: 64px;
             background-color: #FFFFFF;
@@ -91,7 +87,6 @@ def inject_custom_css():
         [data-testid="stToolbar"] { display: none !important; }
         footer { display: none !important; }
 
-        /* 组件风格 */
         div.stButton > button { border: 1px solid #E6EBF5; color: var(--pc-text-main); background: white; box-shadow: 0 1px 2px rgba(0,0,0,0.02); }
         div.stButton > button:hover { border-color: var(--pc-primary-blue); color: var(--pc-primary-blue); background-color: #F0F7FF; }
         
@@ -158,12 +153,10 @@ def load_data_from_upload(file_obj, file_type):
         else: df = pd.read_excel(file_obj)
         df.columns = df.columns.str.strip()
         
-        # 【关键修复】强制清洗关联键
+        # 强制清洗关联键
         if JOIN_KEY in df.columns:
-            # 转字符串 -> 去空格 -> 去除 .0 后缀 (例如 "1001.0" -> "1001")
             df[JOIN_KEY] = df[JOIN_KEY].astype(str).str.strip().str.replace(r'\.0$', '', regex=True)
             
-        # 数字清洗
         for col in df.columns:
             if any(k in str(col) for k in ['额', '量', 'Sales', 'Qty']):
                 try: df[col] = pd.to_numeric(df[col].astype(str).str.replace(',', ''), errors='coerce').fillna(0)
@@ -172,7 +165,6 @@ def load_data_from_upload(file_obj, file_type):
     except Exception as e: st.error(f"加载失败: {e}"); return None
 
 def get_dataframe_info(df, name="df"):
-    """构建带枚举值的表头信息"""
     if df is None: return f"{name}: 未加载"
     info = [f"### 表名: `{name}` ({len(df)} 行)"]
     info.append("| 列名 | 类型 | 示例值 (Top 20 枚举) |")
@@ -182,7 +174,7 @@ def get_dataframe_info(df, name="df"):
         dtype = str(df[col].dtype)
         if df[col].dtype == 'object' or 'category' in str(df[col].dtype):
             uniques = df[col].dropna().unique()
-            sample = list(uniques[:20]) # 限制枚举数量
+            sample = list(uniques[:20]) 
             example_str = str(sample)
         else:
             try: example_str = f"{df[col].min()} ~ {df[col].max()}"
@@ -217,6 +209,55 @@ def format_display_df(df):
             else:
                 df_fmt[col] = df_fmt[col].apply(lambda x: f"{x:,.2f}" if pd.notnull(x) else "-")
     return df_fmt
+
+# --- [终极修复] 健壮的结果转换与判空 ---
+
+def normalize_result(res):
+    """
+    万能结果转换：将 dict/list/series 等转为 DataFrame
+    解决 'dict object has no attribute empty' 的根源
+    """
+    if res is None:
+        return pd.DataFrame()
+        
+    # 情况 1: 已经是 DataFrame
+    if isinstance(res, pd.DataFrame):
+        return res
+    
+    # 情况 2: 是 Series
+    if isinstance(res, pd.Series):
+        return res.to_frame(name='数值').reset_index()
+    
+    # 情况 3: 是字典 (最常见的报错原因)
+    if isinstance(res, dict):
+        try:
+            return pd.DataFrame([res]) # 转为单行 DF
+        except:
+            try:
+                return pd.DataFrame(list(res.items()), columns=['指标', '数值']) # 转为键值对 DF
+            except:
+                pass
+                
+    # 情况 4: 是列表
+    if isinstance(res, list):
+        try:
+            return pd.DataFrame(res)
+        except:
+            return pd.DataFrame(res, columns=['结果'])
+
+    # 情况 5: 其他标量
+    return pd.DataFrame([str(res)], columns=['Result'])
+
+def safe_check_empty(df):
+    """安全检查 DataFrame 是否为空"""
+    if df is None: return True
+    if isinstance(df, pd.DataFrame):
+        return df.empty
+    # 如果不是 DF，先转换再检查
+    try:
+        return normalize_result(df).empty
+    except:
+        return True
 
 # ================= 4. 页面渲染 =================
 
@@ -289,7 +330,7 @@ with st.sidebar:
         st.session_state.messages = []
         st.rerun()
 
-# --- Chat History 渲染 ---
+# --- Chat History ---
 for msg in st.session_state.messages:
     with st.chat_message(msg["role"]):
         if msg["type"] == "text": st.markdown(msg["content"])
@@ -326,7 +367,7 @@ if st.session_state.messages and st.session_state.messages[-1]["role"] == "user"
         关联键: `{JOIN_KEY}`
         """
 
-        # 1. 意图识别 (MODEL_FAST: Flash 2.0)
+        # 1. 意图识别
         with st.status("🔄 思考中...", expanded=False) as status:
             prompt_router = f"""
             判断用户意图: "{user_query}"
@@ -338,7 +379,6 @@ if st.session_state.messages and st.session_state.messages[-1]["role"] == "user"
 
         # 2. 简单查询 (Simple)
         if intent == 'simple':
-            # 【重要】取数逻辑调用 MODEL_SMART (1.5 Pro)
             with st.spinner("⚡ 正在生成代码 (Model: 1.5 Pro)..."):
                 prompt_code = f"""
                 你是一位 Python 专家。
@@ -350,7 +390,7 @@ if st.session_state.messages and st.session_state.messages[-1]["role"] == "user"
                 【严格指令】
                 1. 如果用户问“有哪些产品”，**不要按名称过滤**，直接返回 `df_product` 的前 20 行（包含通用名、商品名、企业）。
                 2. 如果涉及销量，必须使用 `pd.merge` 关联两表。
-                3. **容错机制**: 如果关联后结果为空，尝试直接在 `df_product` 中查找并返回基础信息。
+                3. **容错机制**: 关联结果为空时，请勿报错，而是返回空表。
                 4. 结果赋值给 `result`。
                 
                 输出 JSON: {{ "summary": {{ "intent": "...", "metrics": "...", "logic": "..." }}, "code": "..." }}
@@ -359,7 +399,6 @@ if st.session_state.messages and st.session_state.messages[-1]["role"] == "user"
                 plan = clean_json_string(resp_code.text)
             
             if plan:
-                # 渲染摘要盒子
                 s = plan.get('summary', {})
                 st.markdown(f"""
                 <div class="summary-box">
@@ -376,24 +415,30 @@ if st.session_state.messages and st.session_state.messages[-1]["role"] == "user"
                 
                 try:
                     exec(plan['code'], exec_ctx)
-                    res = exec_ctx.get('result')
+                    res_raw = exec_ctx.get('result')
                     
-                    if res is not None and not res.empty:
-                        st.dataframe(format_display_df(res), use_container_width=True)
-                        st.session_state.messages.append({"role": "assistant", "type": "df", "content": format_display_df(res)})
+                    if res_raw is not None:
+                        # 【核心修复】使用万能转换器，并使用安全检查
+                        res_df = normalize_result(res_raw)
+                        
+                        if not safe_check_empty(res_df):
+                            st.dataframe(format_display_df(res_df), use_container_width=True)
+                            st.session_state.messages.append({"role": "assistant", "type": "df", "content": format_display_df(res_df)})
+                        else:
+                            st.warning("⚠️ 关联查询结果为空，为您展示产品库中的相关记录：")
+                            fallback_code = f"result = df_product[df_product.astype(str).apply(lambda x: x.str.contains('{user_query[:2]}', case=False)).any(axis=1)].head(10)"
+                            try:
+                                exec(fallback_code, exec_ctx)
+                                res_fallback = normalize_result(exec_ctx.get('result'))
+                                if not safe_check_empty(res_fallback):
+                                    st.dataframe(res_fallback)
+                                    st.session_state.messages.append({"role": "assistant", "type": "df", "content": res_fallback})
+                                else:
+                                    st.error("在产品库中也未找到相关信息。")
+                            except:
+                                st.error("查询无结果。")
                     else:
-                        st.warning("⚠️ 关联查询结果为空，为您展示产品库中的相关记录：")
-                        fallback_code = f"result = df_product[df_product.astype(str).apply(lambda x: x.str.contains('{user_query[:2]}', case=False)).any(axis=1)].head(10)"
-                        try:
-                            exec(fallback_code, exec_ctx)
-                            res_fallback = exec_ctx.get('result')
-                            if res_fallback is not None and not res_fallback.empty:
-                                st.dataframe(res_fallback)
-                                st.session_state.messages.append({"role": "assistant", "type": "df", "content": res_fallback})
-                            else:
-                                st.error("在产品库中也未找到相关信息。")
-                        except:
-                            st.error("查询无结果。")
+                         st.error("代码未返回结果变量。")
                 except Exception as e:
                     st.error(f"代码错误: {e}")
 
@@ -439,21 +484,26 @@ if st.session_state.messages and st.session_state.messages[-1]["role"] == "user"
                         exec_ctx = {"df_sales": df_sales, "df_product": df_product, "pd": pd, "np": np, "result": None}
                         try:
                             exec(angle['code'], exec_ctx)
-                            res = exec_ctx.get('result')
+                            res_raw = exec_ctx.get('result')
                             
-                            if res is not None and not res.empty:
-                                st.dataframe(format_display_df(res), use_container_width=True)
-                                
-                                # Step 3: 单点洞察 (MODEL_FAST: Flash 2.0)
-                                prompt_mini = f"简要解读数据趋势 (50字内):\n{res.to_string()}"
-                                resp_mini = safe_generate(client, MODEL_FAST, prompt_mini)
-                                explanation = resp_mini.text
-                                st.markdown(f'<div class="mini-insight">💡 {explanation}</div>', unsafe_allow_html=True)
-                                
-                                angles_data.append({
-                                    "title": angle['title'], "desc": angle['desc'], 
-                                    "data": res, "explanation": explanation
-                                })
+                            if res_raw is not None:
+                                # 【核心修复】安全检查
+                                res_df = normalize_result(res_raw)
+                                if not safe_check_empty(res_df):
+                                    st.dataframe(format_display_df(res_df), use_container_width=True)
+                                    
+                                    # Step 3: 单点洞察 (MODEL_FAST: Flash 2.0)
+                                    prompt_mini = f"简要解读数据趋势 (50字内):\n{res_df.to_string()}"
+                                    resp_mini = safe_generate(client, MODEL_FAST, prompt_mini)
+                                    explanation = resp_mini.text
+                                    st.markdown(f'<div class="mini-insight">💡 {explanation}</div>', unsafe_allow_html=True)
+                                    
+                                    angles_data.append({
+                                        "title": angle['title'], "desc": angle['desc'], 
+                                        "data": res_df, "explanation": explanation
+                                    })
+                                else:
+                                    st.warning("该角度计算结果为空。")
                             else:
                                 st.warning("暂无数据")
                         except Exception as e:
