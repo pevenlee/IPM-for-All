@@ -188,21 +188,33 @@ def get_client():
     try: return genai.Client(api_key=FIXED_API_KEY, http_options={'api_version': 'v1beta'})
     except Exception as e: st.error(f"SDK Error: {e}"); return None
 
+# --- [核心修复] 超强兼容性数据读取 ---
 @st.cache_data
 def load_local_data(filename):
     if not os.path.exists(filename): return None
+    df = None
+    
+    # 策略 1: 尝试作为标准 Excel 读取
     try:
-        if filename.lower().endswith('.csv'):
+        df = pd.read_excel(filename, engine='openpyxl')
+    except Exception:
+        # 策略 2: 尝试作为 CSV (UTF-8) 读取
+        try:
             df = pd.read_csv(filename)
-        else:
+        except Exception:
+            # 策略 3: 尝试作为 CSV (GBK - 解决中文乱码或格式错误)
             try:
-                df = pd.read_excel(filename, engine='openpyxl')
+                df = pd.read_csv(filename, encoding='gbk')
             except Exception:
+                # 策略 4: 尝试作为旧版 Excel (.xls) 读取
                 try:
-                    df = pd.read_csv(filename)
-                except:
-                    df = pd.read_excel(filename)
-        
+                    df = pd.read_excel(filename, engine='xlrd')
+                except Exception as e:
+                    st.error(f"文件 {filename} 读取失败。请确认文件格式。错误: {e}")
+                    return None
+
+    if df is not None:
+        # 数据清洗
         df.columns = df.columns.str.strip()
         
         if JOIN_KEY in df.columns:
@@ -222,8 +234,7 @@ def load_local_data(filename):
                 except: 
                     pass
         return df
-    except Exception as e: 
-        st.error(f"加载 {filename} 失败: {e}"); return None
+    return None
 
 def get_dataframe_info(df, name="df"):
     if df is None: return f"{name}: 未加载"
@@ -291,15 +302,17 @@ def get_history_context(limit=5):
     for msg in relevant_msgs:
         role = "用户" if msg["role"] == "user" else "AI助手"
         content = msg["content"]
-        if msg["type"] == "df": content = "[已展示数据表]"
+        if msg["type"] == "df": 
+            try:
+                df_preview = msg["content"]
+                cols = list(df_preview.columns)
+                content = f"[已展示数据表: {len(df_preview)}行, 列: {cols}]"
+            except:
+                content = "[已展示数据表]"
         context_str += f"{role}: {content}\n"
     return context_str
 
 def render_protocol_card(summary):
-    # 容错处理：如果 summary 为空，则赋予默认值
-    if not summary:
-        summary = {"intent": "自动推断", "scope": "全量", "key_match": "-", "metrics": "-", "logic": "执行代码"}
-    
     st.markdown(f"""
     <div class="summary-box">
         <div class="summary-title">⚡ 执行协议</div>
@@ -474,7 +487,7 @@ if st.session_state.messages and st.session_state.messages[-1]["role"] == "user"
                 【指令】 
                 1. 严格按用户要求提取字段。
                 2. 使用 `pd.merge` 关联两表 (除非用户只查单表)。
-                3. **重要**: 确保所有使用的变量（如 market_share）都在代码中明确定义。
+                3. **重要**: 确保所有使用的变量（如 market_share）都在代码中明确定义。不要使用未定义的变量。
                 4. **绝对禁止**导入 IPython 或使用 display() 函数。
                 5. 禁止使用 df.columns = [...] 强行改名，请使用 df.rename()。
                 6. **避免 'ambiguous' 错误**：如果 index name 与 column name 冲突，请在 reset_index() 前先使用 `df.index.name = None` 或重命名索引。
@@ -541,12 +554,11 @@ if st.session_state.messages and st.session_state.messages[-1]["role"] == "user"
                 
                 请拆解 2-4 个分析角度。每个角度的代码块将被依次执行。
                 **注意**：
-                1. **必须包含 summary 字段**：每个 angle 都必须返回 summary 对象，否则UI不显示。
-                2. 代码块之间共享上下文。如果角度2需要用到角度1计算的变量，确保变量名一致。
-                3. **绝对禁止**导入 IPython 或使用 display() 函数。
-                4. **避免 'ambiguous' 错误**：如果 index name 与 column name 冲突，请在 reset_index() 前先使用 `df.index.name = None` 或重命名索引。
-                5. **避免 'Length mismatch' 错误**：禁止使用 `df.columns = [...]` 强行改名，必须使用 `df.rename(columns={{...}})`。
-                6. 在代码开头，先检查前置依赖的变量是否存在，例如 `if 'df_filtered' not in locals(): result = pd.DataFrame()`。
+                1. 代码块之间共享上下文。如果角度2需要用到角度1计算的变量，确保变量名一致。
+                2. **绝对禁止**导入 IPython 或使用 display() 函数。
+                3. **避免 'ambiguous' 错误**：如果 index name 与 column name 冲突，请在 reset_index() 前先使用 `df.index.name = None` 或重命名索引。
+                4. **避免 'Length mismatch' 错误**：禁止使用 `df.columns = [...]` 强行改名，必须使用 `df.rename(columns={{...}})`。
+                5. 在代码开头，先检查前置依赖的变量是否存在，例如 `if 'df_filtered' not in locals(): result = pd.DataFrame()`。
                 
                 输出 JSON: {{ "intent_analysis": "...", "angles": [ {{ "title": "...", "desc": "...", "summary": {{ "intent": "...", "scope": "...", "metrics": "...", "key_match": "...", "logic": "..." }}, "code": "..." }} ] }}
                 """
@@ -565,13 +577,9 @@ if st.session_state.messages and st.session_state.messages[-1]["role"] == "user"
                     with st.container():
                         st.markdown(f"**{angle['title']}**: {angle['desc']}")
                         
-                        # 强制渲染协议卡片（如果 missing，会使用默认值）
-                        render_protocol_card(angle.get('summary', {}))
+                        if 'summary' in angle:
+                            render_protocol_card(angle['summary'])
                         
-                        # Debug: 显示代码
-                        with st.expander("查看生成代码", expanded=False):
-                            st.code(angle['code'], language='python')
-
                         if 'result' in shared_ctx: del shared_ctx['result']
                             
                         try:
