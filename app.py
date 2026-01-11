@@ -23,7 +23,7 @@ st.set_page_config(
 )
 
 # --- 模型配置 ---
-MODEL_FAST = "gemini-2.0-flash"       # 路由 & 简单洞察
+MODEL_FAST = "gemini-2.0-flash-exp"       # 路由 & 简单洞察
 MODEL_SMART = "gemini-3-pro-preview"      # 写代码 & 深度分析
 
 # --- 常量定义 ---
@@ -188,26 +188,39 @@ def get_client():
     try: return genai.Client(api_key=FIXED_API_KEY, http_options={'api_version': 'v1beta'})
     except Exception as e: st.error(f"SDK Error: {e}"); return None
 
+# --- [核心修复] 智能容错加载函数 ---
 @st.cache_data
 def load_local_data(filename):
     if not os.path.exists(filename): return None
     try:
-        if filename.endswith('.csv'): 
+        # 1. 如果后缀显式为 csv，直接用 read_csv
+        if filename.lower().endswith('.csv'):
             df = pd.read_csv(filename)
-        else: 
-            # 【修复点】强制指定 engine='openpyxl'
-            df = pd.read_excel(filename, engine='openpyxl')
-            
+        else:
+            # 2. 尝试作为标准 Excel (xlsx) 读取
+            try:
+                df = pd.read_excel(filename, engine='openpyxl')
+            except Exception:
+                # 3. 如果 openpyxl 失败（如 "File is not a zip file"），说明可能是 CSV 冒充 xlsx
+                try:
+                    df = pd.read_csv(filename)
+                except:
+                    # 4. 最后尝试默认读取（兼容旧版 .xls 等）
+                    df = pd.read_excel(filename)
+        
+        # 数据清洗：去除列名空格
         df.columns = df.columns.str.strip()
         
+        # 统一关联键格式
         if JOIN_KEY in df.columns:
             df[JOIN_KEY] = df[JOIN_KEY].astype(str).str.strip().str.replace(r'\.0$', '', regex=True)
             
         for col in df.columns:
-            # 强制转换为字符串类型，避免 str.contains 报错
+            # 强制转字符串，防止 object 类型混杂
             if df[col].dtype == 'object':
                 df[col] = df[col].astype(str)
 
+            # 自动清洗数值列
             if any(k in str(col) for k in ['额', '量', 'Sales', 'Qty']):
                 try: df[col] = pd.to_numeric(df[col].astype(str).str.replace(',', ''), errors='coerce').fillna(0)
                 except: pass
@@ -215,13 +228,14 @@ def load_local_data(filename):
             # 增强日期识别
             if any(k in str(col).lower() for k in ['日期', 'date', 'time', '月份', 'year', 'month', 'quarter', 'period', '年', '月', '季']):
                 try: 
-                    # 尝试转换，如果失败则保持原样（可能是 24Q1 这种格式）
+                    # 尝试转换日期，转换失败则保留原字符串（适应 24Q1 这种格式）
                     df[col] = pd.to_datetime(df[col], errors='coerce').fillna(df[col])
                 except: 
                     pass
         return df
     except Exception as e: 
-        st.error(f"加载 {filename} 失败: {e}"); return None
+        st.error(f"文件 {filename} 读取彻底失败: {e}")
+        return None
 
 def get_dataframe_info(df, name="df"):
     if df is None: return f"{name}: 未加载"
@@ -230,7 +244,6 @@ def get_dataframe_info(df, name="df"):
     info.append("|---|---|---|")
     for col in df.columns:
         dtype = str(df[col].dtype)
-        # 获取非空值示例
         sample = list(df[col].dropna().unique()[:5])
         info.append(f"| {col} | {dtype} | {str(sample)} |")
     return "\n".join(info)
@@ -353,11 +366,14 @@ with st.sidebar:
         date_cols = df_sales.select_dtypes(include=['datetime64', 'datetime64[ns]']).columns
         if len(date_cols) > 0:
             target_col = date_cols[0]
-            min_date = df_sales[target_col].min()
-            max_date = df_sales[target_col].max()
-            st.info(f"**时间范围 ({target_col})**:\n\n{min_date.date()} 至 {max_date.date()}")
+            try:
+                min_date = df_sales[target_col].min().strftime('%Y-%m-%d')
+                max_date = df_sales[target_col].max().strftime('%Y-%m-%d')
+                st.info(f"**时间范围 ({target_col})**:\n\n{min_date} 至 {max_date}")
+            except:
+                st.info(f"**时间字段 ({target_col})** 已识别")
         else:
-            st.caption("未检测到时间字段")
+            st.caption("未检测到标准日期格式字段 (可能为季度/字符型)")
         st.divider()
         st.markdown("**包含字段:**")
         st.dataframe(pd.DataFrame(df_sales.columns, columns=["Fact字段"]), height=150, hide_index=True)
@@ -592,4 +608,3 @@ if st.session_state.messages and st.session_state.messages[-1]["role"] == "user"
         else:
             st.info("请询问数据相关问题。")
             st.session_state.messages.append({"role": "assistant", "type": "text", "content": "请询问数据相关问题。"})
-
