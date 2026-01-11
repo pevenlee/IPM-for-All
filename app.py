@@ -315,9 +315,9 @@ def format_display_df(df):
                      if any(k in col_str for k in ['率', '比', 'ratio', '%', 'share', '份额']):
                          df_fmt[col] = df_fmt[col].apply(lambda x: x + "%" if x != "-" and "%" not in x else x)
 
-            # C. 常规金额/销量 (Sales, Qty, 额, 量) -> 2位小数 + 千分位
+            # C. 常规金额/销量 (Sales, Qty, 额, 量) -> 0位小数 + 千分位
             else:
-                df_fmt[col] = df_fmt[col].apply(lambda x: f"{x:,.2f}" if pd.notnull(x) else "-")
+                df_fmt[col] = df_fmt[col].apply(lambda x: f"{x:,.0f}" if pd.notnull(x) else "-")
         
         # 非数值类型的特殊处理
         else:
@@ -738,3 +738,4 @@ if st.session_state.messages and st.session_state.messages[-1]["role"] == "user"
         else:
             st.info("请询问数据相关问题。")
             st.session_state.messages.append({"role": "assistant", "type": "text", "content": "请询问数据相关问题。"})
+
