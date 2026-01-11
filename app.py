@@ -22,7 +22,7 @@ st.set_page_config(
     initial_sidebar_state="expanded"
 )
 
-# --- 模型配置 ---
+# --- 模型配置 (保持不变) ---
 MODEL_FAST = "gemini-2.0-flash-exp"       # 路由 & 简单洞察
 MODEL_SMART = "gemini-3-pro-preview"      # 写代码 & 深度分析
 
@@ -70,7 +70,7 @@ def inject_custom_css():
         [data-testid="stSidebarCollapsedControl"] {
             display: flex !important;
             position: fixed !important;
-            top: 18px !important;       
+            top: 18px !important;        
             left: 20px !important;
             z-index: 1000011 !important;
             background-color: white !important;
@@ -180,7 +180,13 @@ def inject_custom_css():
         </style>
     """, unsafe_allow_html=True)
 
-# ================= 3. 核心工具函数 (修改部分) =================
+# ================= 3. 核心工具函数 =================
+
+@st.cache_resource
+def get_client():
+    if not FIXED_API_KEY: return None
+    try: return genai.Client(api_key=FIXED_API_KEY, http_options={'api_version': 'v1beta'})
+    except Exception as e: st.error(f"SDK Error: {e}"); return None
 
 # --- [增强版] 数据读取与预处理 ---
 @st.cache_data
@@ -188,7 +194,6 @@ def load_local_data(filename):
     if not os.path.exists(filename): return None
     df = None
     
-    # ... (保持原有的读取策略 1-4 不变) ...
     # 策略 1: 尝试作为标准 Excel 读取
     try:
         df = pd.read_excel(filename, engine='openpyxl')
@@ -229,10 +234,7 @@ def load_local_data(filename):
                     # 先尝试转为 datetime
                     df[col] = pd.to_datetime(df[col], errors='coerce').fillna(df[col])
                     
-                    # [新增] 如果是时间类型且列名包含 '季'/'quarter'，强制转为 2024Q1 字符串
-                    # 注意：为了让后续代码能计算，这里建议先保留 datetime 或 Period 类型，
-                    # 但为了通过 AI 生成代码直接展示，这里做个副本或者在展示层处理更好。
-                    # 这里为了兼容性，如果列名明确是季度，则转为字符串方便展示
+                    # [年季处理] 如果是时间类型且列名包含 '季'/'quarter'，强制转为 2024Q1 字符串
                     if df[col].dtype.kind == 'M' and any(x in str(col).lower() for x in ['季', 'quarter']):
                          df[col] = df[col].dt.to_period('Q').astype(str)
                 except: 
@@ -240,14 +242,41 @@ def load_local_data(filename):
         return df
     return None
 
+def get_dataframe_info(df, name="df"):
+    if df is None: return f"{name}: 未加载"
+    info = [f"### 表名: `{name}` ({len(df)} 行)"]
+    info.append("| 列名 | 类型 | 示例值 (Top 5) |")
+    info.append("|---|---|---|")
+    for col in df.columns:
+        dtype = str(df[col].dtype)
+        sample = list(df[col].dropna().unique()[:5])
+        info.append(f"| {col} | {dtype} | {str(sample)} |")
+    return "\n".join(info)
+
+def clean_json_string(text):
+    try: return json.loads(text)
+    except:
+        match = re.search(r'\{.*\}', text, re.DOTALL)
+        if match:
+            try: return json.loads(match.group(0))
+            except: pass
+    return None
+
+def safe_generate(client, model, prompt, mime_type="text/plain"):
+    config = types.GenerateContentConfig(response_mime_type=mime_type)
+    try: 
+        return client.models.generate_content(model=model, contents=prompt, config=config)
+    except Exception as e: 
+        return type('obj', (object,), {'text': f"Error: {e}"})
+
 # --- [增强版] 智能格式化展示函数 ---
 def format_display_df(df):
     """
     智能格式化 DataFrame 用于前端展示：
     1. 年季 (2024Q1)
-    2. 年份 (无千分位)
-    3. 比率/均值 (1位小数)
-    4. 金额/销量 (2位小数 + 千分位)
+    2. 年份 (2024, 无千分位)
+    3. 比率/均值/单价 (1位小数)
+    4. 常规金额/销量 (2位小数 + 千分位)
     """
     if not isinstance(df, pd.DataFrame): return df
     df_fmt = df.copy()
@@ -261,10 +290,8 @@ def format_display_df(df):
         # 如果是 object 但看起来像数字，尝试转一下（除了特定的ID列）
         if not is_numeric and df_fmt[col].dtype == 'object' and 'id' not in col_str and '编码' not in col_str:
             try:
-                # 临时测试是否全为数字
                 temp = pd.to_numeric(df_fmt[col], errors='coerce')
                 if temp.notnull().sum() > 0:
-                    # 只有当大部分是数字时才认作数值列
                     is_numeric = True
             except: pass
 
@@ -275,30 +302,28 @@ def format_display_df(df):
                     df_fmt[col] = df_fmt[col].fillna(0).astype(int).astype(str).replace('0', '-')
                 except: pass
                 
-            # B. 百分比/比率 (率, 比, ratio, %, share) -> 1位小数百分比 (如 25.5%)
-            elif any(x in col_str for x in ['率', '比', 'ratio', 'share', '同比', '环比', '%']):
+            # B. 1位小数: 百分比/比率/均值/价格/份额 (除法结果通常属于此类)
+            elif any(x in col_str for x in ['率', '比', 'ratio', 'share', '同比', '环比', '%', '价', 'price', 'avg', '均', 'average', '贡献', '份额']):
                 # 如果数据已经是 0.25 这种小数
                 if df_fmt[col].mean() < 1.1 and df_fmt[col].max() < 10: 
                      df_fmt[col] = df_fmt[col].apply(lambda x: f"{x:.1%}" if pd.notnull(x) else "-")
-                # 如果数据已经是 25 这种整数
+                # 如果数据已经是 25 这种整数 或 价格/均值
                 else:
-                     df_fmt[col] = df_fmt[col].apply(lambda x: f"{x:.1f}%" if pd.notnull(x) else "-")
+                     # 这里的逻辑涵盖了: 价格、均值、以及已经是整数百分比的列
+                     df_fmt[col] = df_fmt[col].apply(lambda x: f"{x:,.1f}" if pd.notnull(x) else "-")
+                     # 如果明确是百分比列但值较大，可能需要手动加 %，这里为了通用性暂只保留1位小数
+                     if any(k in col_str for k in ['率', '比', 'ratio', '%', 'share', '份额']):
+                         df_fmt[col] = df_fmt[col].apply(lambda x: x + "%" if x != "-" and "%" not in x else x)
 
-            # C. 份额/均值/单价 (Price, Avg, 份额) -> 1位小数 (如 102.5)
-            elif any(x in col_str for x in ['价', 'price', 'avg', '均', 'average']):
-                df_fmt[col] = df_fmt[col].apply(lambda x: f"{x:,.1f}" if pd.notnull(x) else "-")
-
-            # D. 常规金额/销量 (Sales, Qty, 额, 量) -> 2位小数 + 千分位 (如 1,234.56)
+            # C. 常规金额/销量 (Sales, Qty, 额, 量) -> 2位小数 + 千分位
             else:
-                # 只有非整数才保留小数，或者统一保留2位
                 df_fmt[col] = df_fmt[col].apply(lambda x: f"{x:,.2f}" if pd.notnull(x) else "-")
         
         # 非数值类型的特殊处理
         else:
-            # E. 年季/日期处理
+            # D. 年季/日期处理
             # 检查是否为 datetime 类型
             if pd.api.types.is_datetime64_any_dtype(df_fmt[col]):
-                # 如果列名包含 '季' 或 'quarter'
                 if any(x in col_str for x in ['季', 'quarter']):
                      df_fmt[col] = df_fmt[col].dt.to_period('Q').astype(str) # 变成 2024Q1
                 else:
@@ -308,7 +333,6 @@ def format_display_df(df):
             elif df_fmt[col].dtype == 'object' and any(x in col_str for x in ['季', 'quarter']):
                  try:
                      temp_date = pd.to_datetime(df_fmt[col], errors='coerce')
-                     # 只有转换成功的才变格式
                      mask = temp_date.notnull()
                      df_fmt.loc[mask, col] = temp_date[mask].dt.to_period('Q').astype(str)
                  except: pass
@@ -383,6 +407,7 @@ st.markdown(f"""
 <div class="fixed-header-container">
     <div class="nav-left">
         {logo_img}
+        <span class="nav-title">ChatBI Pro</span>
     </div>
     <div class="nav-center">
         <div class="nav-item">HCM</div> 
@@ -654,5 +679,3 @@ if st.session_state.messages and st.session_state.messages[-1]["role"] == "user"
         else:
             st.info("请询问数据相关问题。")
             st.session_state.messages.append({"role": "assistant", "type": "text", "content": "请询问数据相关问题。"})
-
-
