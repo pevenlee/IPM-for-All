@@ -23,8 +23,7 @@ st.set_page_config(
 )
 
 # --- 模型配置 ---
-# 路由模型保持 Flash 1.5 以保证速度和配额，但通过 Prompt 增强其智商
-MODEL_FAST = "gemini-1.5-flash"           
+MODEL_FAST = "gemini-2.0-flash"           
 MODEL_SMART = "gemini-3-pro-preview"      # 写代码 & 深度分析
 
 # --- 常量定义 ---
@@ -542,3 +541,4 @@ if st.session_state.messages and st.session_state.messages[-1]["role"] == "user"
         else:
             st.info("请询问数据相关问题。")
             st.session_state.messages.append({"role": "assistant", "type": "text", "content": "请询问数据相关问题。"})
+
