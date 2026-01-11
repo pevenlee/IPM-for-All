@@ -603,8 +603,16 @@ if st.session_state.messages and st.session_state.messages[-1]["role"] == "user"
                 except Exception as e:
                     st.error(f"代码错误: {e}")
 
-        # 3. 深度分析
+# 3. 深度分析
         elif intent == 'analysis':
+            # [修复2] 使用 copy() 防止数据在分析过程中被意外修改污染全局缓存
+            shared_ctx = {
+                "df_sales": df_sales.copy(), 
+                "df_product": df_product.copy(), 
+                "pd": pd, 
+                "np": np
+            }
+
             with st.spinner(f"🧠 专家拆解分析思路 ({MODEL_SMART})..."):
                 prompt_plan = f"""
                 你是一位医药行业高级分析师。
@@ -624,6 +632,7 @@ if st.session_state.messages and st.session_state.messages[-1]["role"] == "user"
                 3. **避免 'ambiguous' 错误**：如果 index name 与 column name 冲突，请在 reset_index() 前先使用 `df.index.name = None` 或重命名索引。
                 4. **避免 'Length mismatch' 错误**：禁止使用 `df.columns = [...]` 强行改名，必须使用 `df.rename(columns={{...}})`。
                 5. 在代码开头，先检查前置依赖的变量是否存在，例如 `if 'df_filtered' not in locals(): result = pd.DataFrame()`。
+                6. [重要] 每个角度的最终结果必须赋值给变量 `result` (例如 `result = df_grouped`)，否则无法展示。
                 
                 输出 JSON: {{ "intent_analysis": "...", "angles": [ {{ "title": "...", "desc": "...", "summary": {{ "intent": "...", "scope": "...", "metrics": "...", "key_match": "...", "logic": "..." }}, "code": "..." }} ] }}
                 """
@@ -645,11 +654,18 @@ if st.session_state.messages and st.session_state.messages[-1]["role"] == "user"
                         if 'summary' in angle:
                             render_protocol_card(angle['summary'])
                         
+                        # 清除上一轮的 result，防止变量残留
                         if 'result' in shared_ctx: del shared_ctx['result']
                             
                         try:
                             exec(angle['code'], shared_ctx)
                             res_raw = shared_ctx.get('result')
+                            
+                            # 调试信息：如果读不到数据，在后台打印一下生成的代码，方便排查
+                            if res_raw is None:
+                                print(f"Warning: No 'result' variable found in code execution for angle: {angle['title']}")
+                                print("Generated Code:", angle['code'])
+
                             res_df = normalize_result(res_raw)
                             
                             if not safe_check_empty(res_df):
@@ -664,9 +680,12 @@ if st.session_state.messages and st.session_state.messages[-1]["role"] == "user"
                                 st.markdown(f'<div class="mini-insight">💡 {explanation}</div>', unsafe_allow_html=True)
                                 angles_data.append({"title": angle['title'], "explanation": explanation})
                             else:
-                                st.warning(f"角度【{angle['title']}】无数据")
+                                st.warning(f"角度【{angle['title']}】无数据 (可能原因：筛选条件过严或代码未正确赋值 result)")
                         except Exception as e:
                             st.error(f"计算错误: {e}")
+                            # 同样打印错误代码以便调试
+                            print(f"Error in angle {angle['title']}: {e}")
+                            print("Code:", angle['code'])
 
                 if angles_data:
                     with st.spinner(f"📝 生成最终综述 ({MODEL_SMART})..."):
@@ -677,7 +696,7 @@ if st.session_state.messages and st.session_state.messages[-1]["role"] == "user"
                         st.markdown(f'<div class="insight-box">{insight}</div>', unsafe_allow_html=True)
                         st.session_state.messages.append({"role": "assistant", "type": "text", "content": f"### 总结\n{insight}"})
 
-                    # === [新增] Step 3. 智能追问推荐 ===
+                    # === Step 3. 智能追问推荐 ===
                     with st.spinner("🤔 正在思考后续追问..."):
                         prompt_next = f"""
                         基于以下分析结论和数据结构，推荐 2 个用户可能感兴趣的后续深度追问问题。
@@ -694,21 +713,20 @@ if st.session_state.messages and st.session_state.messages[-1]["role"] == "user"
                         resp_next = safe_generate(client, MODEL_FAST, prompt_next, "application/json")
                         next_questions = clean_json_string(resp_next.text)
 
-                    # 渲染追问按钮
                     if isinstance(next_questions, list) and len(next_questions) > 0:
                         st.markdown("### 🧐 还可以继续追问")
                         c1, c2 = st.columns(2)
                         
-                        # Button 1
                         if c1.button(f"👉 {next_questions[0]}", use_container_width=True):
                             st.session_state.messages.append({"role": "user", "type": "text", "content": next_questions[0]})
                             st.rerun()
                             
-                        # Button 2
                         if len(next_questions) > 1:
                             if c2.button(f"👉 {next_questions[1]}", use_container_width=True):
                                 st.session_state.messages.append({"role": "user", "type": "text", "content": next_questions[1]})
                                 st.rerun()
+                                
         else:
             st.info("请询问数据相关问题。")
             st.session_state.messages.append({"role": "assistant", "type": "text", "content": "请询问数据相关问题。"})
+
