@@ -474,7 +474,7 @@ if st.session_state.messages and st.session_state.messages[-1]["role"] == "user"
                 【指令】 
                 1. 严格按用户要求提取字段。
                 2. 使用 `pd.merge` 关联两表 (除非用户只查单表)。
-                3. **重要**: 确保所有使用的变量（如 market_share）都在代码中明确定义。
+                3. **重要**: 确保所有使用的变量（如 market_share）都在代码中明确定义。不要使用未定义的变量。
                 4. **绝对禁止**导入 IPython 或使用 display() 函数。
                 5. 禁止使用 df.columns = [...] 强行改名，请使用 df.rename()。
                 6. **避免 'ambiguous' 错误**：如果 index name 与 column name 冲突，请在 reset_index() 前先使用 `df.index.name = None` 或重命名索引。
