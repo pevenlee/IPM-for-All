@@ -159,6 +159,7 @@ def inject_custom_css():
         .insight-box {
             background: white; padding: 24px; border-radius: 12px; position: relative;
             box-shadow: 0 2px 8px rgba(0,0,0,0.02); border: 1px solid #E6EBF5;
+            font-size: 14px; line-height: 1.6; /* [修改] 字体调小 */
         }
         .insight-box::before {
             content: ''; position: absolute; left: 0; top: 12px; bottom: 12px;
@@ -242,14 +243,19 @@ def load_local_data(filename):
         return df
     return None
 
+# --- [核心修复] 增强数据信息提取：把具体值喂给AI ---
 def get_dataframe_info(df, name="df"):
     if df is None: return f"{name}: 未加载"
     info = [f"### 表名: `{name}` ({len(df)} 行)"]
-    info.append("| 列名 | 类型 | 示例值 (Top 5) |")
+    info.append("| 列名 | 类型 | 样本值/唯一值 (Context) |")
     info.append("|---|---|---|")
     for col in df.columns:
         dtype = str(df[col].dtype)
-        sample = list(df[col].dropna().unique()[:5])
+        # 关键修改：如果唯一值少于20个（分类变量），全部列出，防止AI瞎猜“最新批次”是什么
+        if df[col].nunique() < 20:
+            sample = list(df[col].dropna().unique())
+        else:
+            sample = list(df[col].dropna().unique()[:5])
         info.append(f"| {col} | {dtype} | {str(sample)} |")
     return "\n".join(info)
 
@@ -304,8 +310,10 @@ def format_display_df(df):
                 
             # B. 1位小数: 百分比/比率/均值/价格/份额
             elif any(x in col_str for x in ['率', '比', 'ratio', 'share', '同比', '环比', '%', '价', 'price', 'avg', '均', 'average', '贡献', '份额']):
+                # 如果数据已经是 0.25 这种小数
                 if df_fmt[col].mean() < 1.1 and df_fmt[col].max() < 10: 
                      df_fmt[col] = df_fmt[col].apply(lambda x: f"{x:.1%}" if pd.notnull(x) else "-")
+                # 如果数据已经是 25 这种整数 或 价格/均值
                 else:
                      df_fmt[col] = df_fmt[col].apply(lambda x: f"{x:,.1f}" if pd.notnull(x) else "-")
                      if any(k in col_str for k in ['率', '比', 'ratio', '%', 'share', '份额']):
@@ -360,13 +368,7 @@ def get_history_context(limit=5):
     for msg in relevant_msgs:
         role = "用户" if msg["role"] == "user" else "AI助手"
         content = msg["content"]
-        if msg["type"] == "df": 
-            try:
-                df_preview = msg["content"]
-                cols = list(df_preview.columns)
-                content = f"[已展示数据表: {len(df_preview)}行, 列: {cols}]"
-            except:
-                content = "[已展示数据表]"
+        if msg["type"] == "df": content = "[已展示数据表]"
         context_str += f"{role}: {content}\n"
     return context_str
 
@@ -404,10 +406,12 @@ st.markdown(f"""
 <div class="fixed-header-container">
     <div class="nav-left">
         {logo_img}
+        <span class="nav-title">ChatBI Pro</span>
     </div>
     <div class="nav-center">
         <div class="nav-item">HCM</div> 
         <div class="nav-item active">ChatBI</div>
+        <div class="nav-item">Insight</div>
     </div>
     <div class="nav-right">
         <div class="nav-avatar">PRO</div>
@@ -672,7 +676,6 @@ if st.session_state.messages and st.session_state.messages[-1]["role"] == "user"
                                 candidates = [v for v in new_vars if isinstance(shared_ctx[v], pd.DataFrame)]
                                 if candidates: 
                                     res_raw = shared_ctx[candidates[-1]]
-                                    # print(f"Fallback: Used variable '{candidates[-1]}' as result")
 
                             res_df = normalize_result(res_raw)
                             
@@ -734,4 +737,3 @@ if st.session_state.messages and st.session_state.messages[-1]["role"] == "user"
         else:
             st.info("请询问数据相关问题。")
             st.session_state.messages.append({"role": "assistant", "type": "text", "content": "请询问数据相关问题。"})
-
