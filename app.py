@@ -387,12 +387,12 @@ for msg in st.session_state.messages:
 if not st.session_state.messages:
     st.markdown("### 💡 猜你想问")
     c1, c2, c3 = st.columns(3)
-    if c1.button("🗺️ 康缘在各省份的份额?"): 
-        st.session_state.messages.append({"role": "user", "type": "text", "content": "康缘在各省份的份额?"}); st.rerun()
-    if c2.button("💊 查一下泰中定的销售额"): 
-        st.session_state.messages.append({"role": "user", "type": "text", "content": "查一下泰中定的销售额"}); st.rerun()
-    if c3.button("📊 市场增长趋势分析"): 
-        st.session_state.messages.append({"role": "user", "type": "text", "content": "分析一下市场增长趋势"}); st.rerun()
+    if c1.button("🗺️ 肿瘤产品的市场表现如何?"): 
+        st.session_state.messages.append({"role": "user", "type": "text", "content": "肿瘤产品的市场表现如何?"}); st.rerun()
+    if c2.button("💊 查一下K药最近的销售额"): 
+        st.session_state.messages.append({"role": "user", "type": "text", "content": "查一下K药最近的销售额"}); st.rerun()
+    if c3.button("📊 销售额过亿的，独家创新药有哪些"): 
+        st.session_state.messages.append({"role": "user", "type": "text", "content": "销售额过亿的，独家创新药有哪些"}); st.rerun()
 
 # --- Input ---
 if query := st.chat_input("🔎 请输入问题..."):
@@ -572,6 +572,7 @@ if query := st.chat_input("🔎 请输入问题..."):
 
         else:
             st.info("请询问与数据相关的问题。")
+
 
 
 
