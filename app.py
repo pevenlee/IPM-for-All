@@ -23,10 +23,9 @@ st.set_page_config(
 )
 
 # --- 模型配置 ---
-# 提示：Gemini 3.0 尚未公开，这里为您配置目前最强的 1.5 Pro 版本
 # 如果您确实有内测权限，请将 MODEL_SMART 改为 "gemini-3-pro-preview"
 MODEL_FAST = "gemini-2.0-flash-exp"       # 路由 & 简单洞察
-MODEL_SMART = "gemini-1.5-pro"            # 写代码 & 深度分析 (原 gemini-3-pro-preview)
+MODEL_SMART = "gemini-3-pro-preview"            # 写代码 & 深度分析 (原 gemini-3-pro-preview)
 
 # --- 常量定义 ---
 JOIN_KEY = "药品编码"
@@ -34,7 +33,7 @@ LOGO_FILE = "logo.png"
 
 # --- 本地文件名定义 (请确保根目录有这两个文件) ---
 FILE_FACT = "fact.xlsx"  # 销售事实表
-FILE_DIM = "dim.xlsx"    # 产品维度表
+FILE_DIM = "ipmdata.xlsx"    # 产品维度表
 
 try:
     FIXED_API_KEY = st.secrets["GENAI_API_KEY"]
@@ -515,3 +514,4 @@ if query := st.chat_input("🔎 请输入问题..."):
 
         else:
             st.info("请询问与数据相关的问题。")
+
