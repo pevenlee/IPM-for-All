@@ -342,7 +342,6 @@ st.markdown(f"""
 <div class="fixed-header-container">
     <div class="nav-left">
         {logo_img}
-        <span class="nav-title">ChatBI Pro</span>
     </div>
     <div class="nav-center">
         <div class="nav-item">HCM</div> 
@@ -614,3 +613,4 @@ if st.session_state.messages and st.session_state.messages[-1]["role"] == "user"
         else:
             st.info("请询问数据相关问题。")
             st.session_state.messages.append({"role": "assistant", "type": "text", "content": "请询问数据相关问题。"})
+
