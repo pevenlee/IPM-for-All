@@ -276,7 +276,7 @@ def format_display_df(df):
     1. 年季 (2024Q1)
     2. 年份 (2024, 无千分位)
     3. 比率/均值/单价 (1位小数)
-    4. 常规金额/销量 (2位小数 + 千分位)
+    4. 常规金额/销量 (整数 + 千分位)
     """
     if not isinstance(df, pd.DataFrame): return df
     df_fmt = df.copy()
@@ -501,14 +501,10 @@ if st.session_state.messages and st.session_state.messages[-1]["role"] == "user"
         
         【重要业务知识库】
         1. 涉及“内资/外资”时，请使用 `df_product['企业类型']` 字段。
-        2. 涉及“PDx”、“PD-1”、“PD-L1”时，请筛选 `ATC4描述` 或 `通用名` 包含 'PD-1' 或 'PD-L1' (不区分大小写)。
-        3. “K药”对应通用名“帕博利珠单抗”；“O药”对应“纳武利尤单抗”；“I药”对应“度伐利尤单抗”。
         
         【时间计算强制规则】
         1. **同比完整性校验**：在计算同比（Year-over-Year）时，必须检查基准期数据是否完整。
-           - 场景：如果数据起始于 2023Q4（即2023年只有1个季度数据），而2024年有全年数据。
-           - 禁止：绝对禁止计算 "2024全年 vs 2023全年" 的同比。
-           - 替代：应自动调整为 "2024Q4 vs 2023Q4" 或仅展示最新完整周期。
+           - 场景：如果数据起始于 2023Q4（即2023年只有1个季度数据），而2024年有全年数据。禁止计算 "2024全年 vs 2023全年" 的同比。应自动调整为 "2024Q4 vs 2023Q4" 或仅展示最新完整周期。
         2. **市场规模默认口径**：当用户询问“市场规模”且未明确指定时间范围（如“2023年”、“上季度”）时：
            - 默认行为：必须使用**最新滚动年 (MAT)** 也就是数据中最新的连续4个季度之和。
         """
@@ -551,7 +547,7 @@ if st.session_state.messages and st.session_state.messages[-1]["role"] == "user"
         if intent == 'simple':
             with st.spinner(f"⚡ 正在生成代码 ({MODEL_SMART})..."):
                 prompt_code = f"""
-                你是一位 Python 专家。
+                你是一位医药行业的 Python 专家。
                 
                 【历史对话】(用于理解指代)
                 {history_str}
@@ -571,7 +567,7 @@ if st.session_state.messages and st.session_state.messages[-1]["role"] == "user"
                 7. 结果存为 `result`。
                 
                 【摘要生成规则 (Summary)】
-                - scope (范围): 数据的筛选范围。
+                - scope (范围): 数据的筛选范围，时间范围。
                 - metrics (指标): 用户查询的核心指标。
                 - key_match (关键匹配): **必须说明**提取了用户什么词，去匹配了哪个列。例如："提取用户词 'K药' -> 模糊匹配 '商品名' 列"。
                 - logic (加工逻辑): 简述筛选和计算步骤，严禁提及“表关联”、“Merge”等技术术语。
@@ -738,4 +734,5 @@ if st.session_state.messages and st.session_state.messages[-1]["role"] == "user"
         else:
             st.info("请询问数据相关问题。")
             st.session_state.messages.append({"role": "assistant", "type": "text", "content": "请询问数据相关问题。"})
+
 
