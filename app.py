@@ -23,15 +23,14 @@ st.set_page_config(
 )
 
 # --- 模型配置 ---
-# 如果您确实有内测权限，请将 MODEL_SMART 改为 "gemini-3-pro-preview"
 MODEL_FAST = "gemini-2.0-flash-exp"       # 路由 & 简单洞察
-MODEL_SMART = "gemini-3-pro-preview"            # 写代码 & 深度分析 (原 gemini-3-pro-preview)
+MODEL_SMART = "gemini-3-pro-preview"      # 写代码 & 深度分析 (保持不变)
 
 # --- 常量定义 ---
 JOIN_KEY = "药品编码"
 LOGO_FILE = "logo.png"
 
-# --- 本地文件名定义 (请确保根目录有这两个文件) ---
+# --- 本地文件名定义 ---
 FILE_FACT = "fact.xlsx"  # 销售事实表
 FILE_DIM = "ipmdata.xlsx"    # 产品维度表
 
@@ -40,7 +39,7 @@ try:
 except:
     FIXED_API_KEY = ""
 
-# ================= 2. 视觉体系 (VI) =================
+# ================= 2. 视觉体系 (VI) - CSS 深度修复 =================
 
 def inject_custom_css():
     st.markdown("""
@@ -58,54 +57,55 @@ def inject_custom_css():
         .stApp { background-color: var(--pc-bg-light); font-family: 'Inter', "Microsoft YaHei", sans-serif; color: var(--pc-text-main); }
 
         /* =================================================================
-           1. 侧边栏控制按钮修复 (核心部分)
+           1. 侧边栏按钮终极修复 (CSS Magic)
            ================================================================= */
         
-        /* A. 展开按钮 (当侧边栏关闭时显示) */
+        /* 让原生 Header 透明，且不阻挡下方点击，但保留视觉占位以防布局错乱（如果需要） 
+           关键是 pointer-events: none，让鼠标可以直接穿透 Header 点击下面的自定义导航栏
+        */
+        header[data-testid="stHeader"] {
+            background-color: transparent !important;
+            pointer-events: none !important; 
+            z-index: 1000010 !important; /* 保证层级最高 */
+        }
+
+        /* 恢复 Header 内部按钮（如侧边栏开关、三个点菜单）的点击能力 */
+        header[data-testid="stHeader"] button {
+            pointer-events: auto !important;
+            color: var(--pc-text-sub) !important;
+        }
+
+        /* 专门针对侧边栏收起/展开按钮进行样式重写 */
         [data-testid="stSidebarCollapsedControl"] {
             display: block !important;
             position: fixed !important;
-            top: 16px !important;       /* 调整垂直位置以对齐自定义Header */
-            left: 16px !important;
-            z-index: 1000002 !important; /* 最高层级，压在自定义Header上面 */
-            color: var(--pc-text-sub) !important;
-            background-color: transparent !important;
+            top: 18px !important;       
+            left: 20px !important;
+            z-index: 1000011 !important; /* 比 Header 更高 */
+            background-color: white !important;
+            border-radius: 50%;
             width: 32px;
             height: 32px;
-        }
-        [data-testid="stSidebarCollapsedControl"]:hover {
+            box-shadow: 0 2px 6px rgba(0,0,0,0.1);
             color: var(--pc-primary-blue) !important;
-            background-color: #F0F7FF !important;
-            border-radius: 4px;
-        }
-
-        /* B. 顶部 Header (包含收起按钮 X) */
-        /* 不要 display:none，而是透明化，为了保留里面的 X 按钮 */
-        header[data-testid="stHeader"] {
-            background-color: transparent !important;
-            z-index: 1000001 !important; /* 保证在自定义Header之上 */
-            height: 64px !important;
-        }
-
-        /* 隐藏 Header 里的右侧菜单 (三道杠) 和 部署按钮 */
-        [data-testid="stToolbar"], 
-        [data-testid="stHeaderActionElements"] {
-            display: none !important;
+            border: 1px solid #E6EBF5;
+            display: flex !important;
+            align-items: center;
+            justify-content: center;
         }
         
-        /* 隐藏 Header 顶部的彩虹条 */
-        [data-testid="stDecoration"] {
-            display: none !important;
+        /* 鼠标悬停效果 */
+        [data-testid="stSidebarCollapsedControl"]:hover {
+            background-color: #F0F7FF !important;
+            color: var(--pc-dark-blue) !important;
+            transform: scale(1.05);
+            transition: all 0.2s;
         }
 
-        /* 确保 Header 里的按钮（收起 X）是可见的并且颜色正确 */
-        header[data-testid="stHeader"] button {
-            color: var(--pc-text-sub) !important;
-        }
-        header[data-testid="stHeader"] button:hover {
-            color: var(--pc-primary-blue) !important;
-            background-color: transparent !important;
-        }
+        /* 隐藏顶部的彩虹装饰条 */
+        [data-testid="stDecoration"] { display: none !important; }
+        /* 隐藏原生 Toolbar (右侧 Deploy 等按钮) 如果不需要 */
+        [data-testid="stToolbar"] { display: none !important; }
 
         /* =================================================================
            2. 自定义导航栏样式
@@ -114,13 +114,12 @@ def inject_custom_css():
             position: fixed; top: 0; left: 0; width: 100%; height: 64px;
             background-color: #FFFFFF;
             box-shadow: 0 2px 12px rgba(0, 90, 222, 0.08);
-            z-index: 999999; /* 比原生Header低一层，被它盖住，但原生Header是透明的 */
+            z-index: 999999; 
             display: flex; align-items: center; justify-content: space-between;
             padding: 0 24px; border-bottom: 1px solid #E6EBF5;
-            padding-left: 60px; /* 【关键】左侧留出空隙给展开/收起按钮 */
+            padding-left: 70px; /* 【关键】左侧留出更多空隙给悬浮的展开按钮 */
         }
         
-        /* 调整 Logo 位置，不要离按钮太近 */
         .nav-left { display: flex; align-items: center; }
         .nav-logo-img { height: 32px; width: auto; margin-right: 12px; }
         .nav-title { font-size: 18px; font-weight: 700; color: var(--pc-primary-blue); letter-spacing: 0.5px; }
@@ -145,14 +144,12 @@ def inject_custom_css():
         }
 
         .block-container { padding-top: 80px !important; padding-bottom: 3rem !important; max-width: 1200px; }
-        
         footer { display: none !important; }
 
-        /* Streamlit 按钮样式美化 */
+        /* 按钮与卡片样式 */
         div.stButton > button { border: 1px solid #E6EBF5; color: var(--pc-text-main); background: white; box-shadow: 0 1px 2px rgba(0,0,0,0.02); }
         div.stButton > button:hover { border-color: var(--pc-primary-blue); color: var(--pc-primary-blue); background-color: #F0F7FF; }
         
-        /* 报告框样式 */
         .summary-box {
             background-color: #FFFFFF; padding: 20px; border-radius: 8px;
             border: 1px solid #E6EBF5; border-left: 4px solid var(--pc-primary-blue); margin-bottom: 20px;
@@ -208,7 +205,6 @@ def get_client():
     try: return genai.Client(api_key=FIXED_API_KEY, http_options={'api_version': 'v1beta'})
     except Exception as e: st.error(f"SDK Error: {e}"); return None
 
-# --- 修改：从本地加载数据 ---
 @st.cache_data
 def load_local_data(filename):
     """从根目录加载数据"""
@@ -285,7 +281,6 @@ def format_display_df(df):
     return df_fmt
 
 def normalize_result(res):
-    """万能结果转换"""
     if res is None: return pd.DataFrame()
     if isinstance(res, pd.DataFrame): return res
     if isinstance(res, pd.Series): return res.to_frame(name='数值').reset_index()
@@ -310,12 +305,11 @@ def safe_check_empty(df):
 inject_custom_css()
 client = get_client()
 
-# --- 加载数据 (根目录) ---
-# 确保在侧边栏渲染前加载数据
+# --- 加载数据 ---
 df_sales = load_local_data(FILE_FACT)
 df_product = load_local_data(FILE_DIM)
 
-# --- Header 渲染 ---
+# --- Header ---
 logo_b64 = base64.b64encode(open(LOGO_FILE, "rb").read()).decode() if os.path.exists(LOGO_FILE) else ""
 logo_img = f'<img src="data:image/png;base64,{logo_b64}" class="nav-logo-img">' if logo_b64 else ""
 
@@ -339,14 +333,13 @@ st.markdown(f"""
 
 if "messages" not in st.session_state: st.session_state.messages = []
 
-# --- Sidebar (修改版) ---
+# --- Sidebar ---
 with st.sidebar:
     st.markdown("### 📊 数据概览")
     
     if df_sales is not None:
         st.success(f"已加载: {FILE_FACT}")
-        
-        # 1. 显示时间范围
+        # 显示时间范围
         date_cols = df_sales.select_dtypes(include=['datetime64', 'datetime64[ns]']).columns
         if len(date_cols) > 0:
             target_col = date_cols[0]
@@ -355,15 +348,12 @@ with st.sidebar:
             st.info(f"**时间范围 ({target_col})**:\n\n{min_date.date()} 至 {max_date.date()}")
         else:
             st.caption("未检测到时间字段")
-            
         st.divider()
-        
-        # 2. 显示字段
+        # 显示字段
         st.markdown("**包含字段:**")
         st.dataframe(pd.DataFrame(df_sales.columns, columns=["Fact字段"]), height=150, hide_index=True)
     else:
         st.error(f"未找到 {FILE_FACT}")
-        st.caption("请将文件放入项目根目录")
 
     if df_product is not None:
         st.success(f"已加载: {FILE_DIM}")
@@ -376,32 +366,44 @@ with st.sidebar:
         st.session_state.messages = []
         st.rerun()
 
-# --- Chat History (渲染逻辑) ---
-# 这一步非常重要，确保每次 rerun 时历史记录都会被重新画出来
+# --- Chat History ---
 for msg in st.session_state.messages:
     with st.chat_message(msg["role"]):
         if msg["type"] == "text": st.markdown(msg["content"])
         elif msg["type"] == "df": st.dataframe(msg["content"], use_container_width=True)
 
-# --- 猜你想问 ---
+# --- 猜你想问 (修复：点击后直接处理，不单纯依赖 rerun 后的逻辑判断) ---
 if not st.session_state.messages:
     st.markdown("### 💡 猜你想问")
     c1, c2, c3 = st.columns(3)
+    
+    # 预设问题处理函数
+    def handle_preset(question):
+        st.session_state.messages.append({"role": "user", "type": "text", "content": question})
+        st.rerun()
+
     if c1.button("🗺️ 肿瘤产品的市场表现如何?"): 
-        st.session_state.messages.append({"role": "user", "type": "text", "content": "肿瘤产品的市场表现如何?"}); st.rerun()
+        handle_preset("肿瘤产品的市场表现如何?")
     if c2.button("💊 查一下K药最近的销售额"): 
-        st.session_state.messages.append({"role": "user", "type": "text", "content": "查一下K药最近的销售额"}); st.rerun()
+        handle_preset("查一下K药最近的销售额")
     if c3.button("📊 销售额过亿的，独家创新药有哪些"): 
-        st.session_state.messages.append({"role": "user", "type": "text", "content": "销售额过亿的，独家创新药有哪些"}); st.rerun()
+        handle_preset("销售额过亿的，独家创新药有哪些")
 
 # --- Input ---
-if query := st.chat_input("🔎 请输入问题..."):
-    # 立即上屏并保存用户问题
+query = st.chat_input("🔎 请输入问题...")
+
+# 如果有输入，先存入历史
+if query:
+    st.session_state.messages.append({"role": "user", "type": "text", "content": query})
     with st.chat_message("user"):
         st.markdown(query)
-    st.session_state.messages.append({"role": "user", "type": "text", "content": query})
+
+# --- 核心逻辑 (修复：即时渲染) ---
+# 只有当最新一条消息是 user 时才触发分析，避免死循环或未响应
+if st.session_state.messages and st.session_state.messages[-1]["role"] == "user":
+    user_query = st.session_state.messages[-1]["content"]
     
-    # 触发处理逻辑
+    # 使用 container 或 chat_message("assistant") 确保即时看到结果
     with st.chat_message("assistant"):
         if df_sales is None or df_product is None:
             st.error(f"请确保根目录下存在 {FILE_FACT} 和 {FILE_DIM}")
@@ -416,7 +418,7 @@ if query := st.chat_input("🔎 请输入问题..."):
         # 1. 意图识别
         with st.status("🔄 思考中...", expanded=False) as status:
             prompt_router = f"""
-            判断用户意图: "{query}"
+            判断用户意图: "{user_query}"
             输出 JSON: {{ "type": "simple/analysis/irrelevant" }}
             """
             resp = safe_generate(client, MODEL_FAST, prompt_router, "application/json")
@@ -428,7 +430,7 @@ if query := st.chat_input("🔎 请输入问题..."):
             with st.spinner(f"⚡ 正在生成代码 ({MODEL_SMART})..."):
                 prompt_code = f"""
                 你是一位 Python 专家。
-                用户问题: "{query}"
+                用户问题: "{user_query}"
                 
                 【数据上下文 (含枚举)】
                 {context_info}
@@ -446,6 +448,7 @@ if query := st.chat_input("🔎 请输入问题..."):
             
             if plan:
                 s = plan.get('summary', {})
+                # 即时渲染摘要
                 st.markdown(f"""
                 <div class="summary-box">
                     <div class="summary-title">⚡ 取数执行协议</div>
@@ -456,7 +459,7 @@ if query := st.chat_input("🔎 请输入问题..."):
                     </ul>
                 </div>
                 """, unsafe_allow_html=True)
-                # 保存这个摘要到历史记录（作为 Text）
+                # 存入历史
                 st.session_state.messages.append({"role": "assistant", "type": "text", "content": f"**执行协议**: {s.get('intent', '-')}"})
 
                 exec_ctx = {"df_sales": df_sales, "df_product": df_product, "pd": pd, "np": np, "result": None}
@@ -469,12 +472,14 @@ if query := st.chat_input("🔎 请输入问题..."):
                         res_df = normalize_result(res_raw)
                         
                         if not safe_check_empty(res_df):
-                            st.dataframe(format_display_df(res_df), use_container_width=True)
-                            # 保存 DF 到历史记录
-                            st.session_state.messages.append({"role": "assistant", "type": "df", "content": format_display_df(res_df)})
+                            # 即时渲染表格
+                            formatted_df = format_display_df(res_df)
+                            st.dataframe(formatted_df, use_container_width=True)
+                            # 存入历史
+                            st.session_state.messages.append({"role": "assistant", "type": "df", "content": formatted_df})
                         else:
                             st.warning("⚠️ 关联查询结果为空，尝试模糊搜索产品库...")
-                            fallback_code = f"result = df_product[df_product.astype(str).apply(lambda x: x.str.contains('{query[:2]}', case=False)).any(axis=1)].head(10)"
+                            fallback_code = f"result = df_product[df_product.astype(str).apply(lambda x: x.str.contains('{user_query[:2]}', case=False)).any(axis=1)].head(10)"
                             try:
                                 exec(fallback_code, exec_ctx)
                                 res_fallback = normalize_result(exec_ctx.get('result'))
@@ -498,7 +503,7 @@ if query := st.chat_input("🔎 请输入问题..."):
             with st.spinner(f"🧠 专家拆解分析思路 ({MODEL_SMART})..."):
                 prompt_plan = f"""
                 你是一位医药行业高级分析师。
-                用户问题: "{query}"
+                用户问题: "{user_query}"
                 
                 【数据上下文 (含枚举)】
                 {context_info}
@@ -534,10 +539,12 @@ if query := st.chat_input("🔎 请输入问题..."):
                             res_df = normalize_result(res_raw)
                             
                             if not safe_check_empty(res_df):
-                                st.dataframe(format_display_df(res_df), use_container_width=True)
+                                formatted_df = format_display_df(res_df)
+                                st.dataframe(formatted_df, use_container_width=True)
+                                
                                 # 保存中间结果到历史
                                 st.session_state.messages.append({"role": "assistant", "type": "text", "content": f"**{angle['title']}**"})
-                                st.session_state.messages.append({"role": "assistant", "type": "df", "content": format_display_df(res_df)})
+                                st.session_state.messages.append({"role": "assistant", "type": "df", "content": formatted_df})
                                 
                                 prompt_mini = f"简要解读数据趋势 (50字内):\n{res_df.to_string()}"
                                 resp_mini = safe_generate(client, MODEL_FAST, prompt_mini)
@@ -558,7 +565,7 @@ if query := st.chat_input("🔎 请输入问题..."):
                     with st.spinner(f"📝 生成最终综述 ({MODEL_SMART})..."):
                         findings = "\n".join([f"[{a['title']}]: {a['explanation']}" for a in angles_data])
                         prompt_final = f"""
-                        基于各角度发现回答问题: "{query}"
+                        基于各角度发现回答问题: "{user_query}"
                         
                         【各角度发现】
                         {findings}
@@ -572,7 +579,4 @@ if query := st.chat_input("🔎 请输入问题..."):
 
         else:
             st.info("请询问与数据相关的问题。")
-
-
-
-
+            st.session_state.messages.append({"role": "assistant", "type": "text", "content": "请询问与数据相关的问题。"})
