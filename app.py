@@ -207,9 +207,14 @@ def load_local_data(filename):
             if any(k in str(col) for k in ['额', '量', 'Sales', 'Qty']):
                 try: df[col] = pd.to_numeric(df[col].astype(str).str.replace(',', ''), errors='coerce').fillna(0)
                 except: pass
-            if any(k in str(col).lower() for k in ['日期', 'date', 'time', '月份']):
-                try: df[col] = pd.to_datetime(df[col])
-                except: pass
+            
+            # 【修复1】增强的日期识别逻辑，包含"年"、"季"、"quarter"等
+            if any(k in str(col).lower() for k in ['日期', 'date', 'time', '月份', 'year', 'month', 'quarter', 'period', '年', '月', '季']):
+                try: 
+                    # 尝试转换，如果失败则保持原样（可能是 24Q1 这种格式）
+                    df[col] = pd.to_datetime(df[col], errors='coerce').fillna(df[col])
+                except: 
+                    pass
         return df
     except Exception as e: 
         st.error(f"加载 {filename} 失败: {e}"); return None
@@ -217,19 +222,13 @@ def load_local_data(filename):
 def get_dataframe_info(df, name="df"):
     if df is None: return f"{name}: 未加载"
     info = [f"### 表名: `{name}` ({len(df)} 行)"]
-    info.append("| 列名 | 类型 | 示例值 (Top 20 枚举) |")
+    info.append("| 列名 | 类型 | 示例值 (Top 5) |")
     info.append("|---|---|---|")
     for col in df.columns:
         dtype = str(df[col].dtype)
-        if df[col].dtype == 'object' or 'category' in str(df[col].dtype):
-            uniques = df[col].dropna().unique()
-            sample = list(uniques[:20]) 
-            example_str = str(sample)
-        else:
-            try: example_str = f"{df[col].min()} ~ {df[col].max()}"
-            except: example_str = "数值"
-        if len(example_str) > 200: example_str = example_str[:200] + "..."
-        info.append(f"| {col} | {dtype} | {example_str} |")
+        # 获取非空值示例
+        sample = list(df[col].dropna().unique()[:5])
+        info.append(f"| {col} | {dtype} | {str(sample)} |")
     return "\n".join(info)
 
 def clean_json_string(text):
@@ -350,11 +349,14 @@ with st.sidebar:
         date_cols = df_sales.select_dtypes(include=['datetime64', 'datetime64[ns]']).columns
         if len(date_cols) > 0:
             target_col = date_cols[0]
-            min_date = df_sales[target_col].min()
-            max_date = df_sales[target_col].max()
-            st.info(f"**时间范围 ({target_col})**:\n\n{min_date.date()} 至 {max_date.date()}")
+            try:
+                min_date = df_sales[target_col].min().strftime('%Y-%m-%d')
+                max_date = df_sales[target_col].max().strftime('%Y-%m-%d')
+                st.info(f"**时间范围 ({target_col})**:\n\n{min_date} 至 {max_date}")
+            except:
+                st.info(f"**时间字段 ({target_col})** 已识别，但无法自动计算范围")
         else:
-            st.caption("未检测到时间字段")
+            st.caption("未检测到标准日期格式字段 (可能为季度/字符型)")
         st.divider()
         st.markdown("**包含字段:**")
         st.dataframe(pd.DataFrame(df_sales.columns, columns=["Fact字段"]), height=150, hide_index=True)
@@ -463,11 +465,12 @@ if st.session_state.messages and st.session_state.messages[-1]["role"] == "user"
                 【指令】 
                 1. 严格按用户要求提取字段。
                 2. 使用 `pd.merge` 关联两表 (除非用户只查单表)。
-                3. **重要**: 确保所有使用的变量（如 market_share）都在代码中明确定义。不要使用未定义的变量。
+                3. **重要**: 确保所有使用的变量（如 market_share）都在代码中明确定义。
                 4. **绝对禁止**导入 IPython 或使用 display() 函数。
-                5. 禁止使用 df.columns = [...] 强行改名，请使用 df.rename()。
-                6. **避免 'ambiguous' 错误**：如果 index name 与 column name 冲突，请在 reset_index() 前先使用 `df.index.name = None` 或重命名索引。
-                7. 结果存为 `result`。
+                5. **【严重警告】禁止使用 `df.columns = [...]` 直接赋值来重命名列**，这会导致 'Length mismatch' 错误。请务必使用 `df.rename(columns={{'old': 'new'}})`。
+                6. **解决 'ambiguous' 错误**：如果 index 名称与列名冲突，在 reset_index 前执行 `df.index.name = None`。
+                7. **日期处理**：注意数据中的日期列可能是字符串（如 '24Q1'）。如果是字符串，请使用字符串匹配（如 `str.contains`），不要使用 `.dt` 属性。
+                8. 结果存为 `result`。
                 
                 【摘要生成规则 (Summary)】
                 - scope (范围): 数据的筛选范围。
@@ -531,9 +534,10 @@ if st.session_state.messages and st.session_state.messages[-1]["role"] == "user"
                 **注意**：
                 1. 代码块之间共享上下文。如果角度2需要用到角度1计算的变量，确保变量名一致。
                 2. **绝对禁止**导入 IPython 或使用 display() 函数。
-                3. **避免 'ambiguous' 错误**：如果 index name 与 column name 冲突，请在 reset_index() 前先使用 `df.index.name = None` 或重命名索引。
-                4. **避免 'Length mismatch' 错误**：禁止使用 `df.columns = [...]` 强行改名，必须使用 `df.rename(columns={...})`。
-                5. 在代码开头，先检查前置依赖的变量是否存在，例如 `if 'df_filtered' not in locals(): result = pd.DataFrame()`。
+                3. **【严重警告】禁止使用 `df.columns = [...]` 直接赋值**。必须使用 `df.rename(columns={{...}})`，或使用 `df.set_axis(..., axis=1)`。这是为了防止 'Length mismatch' 错误。
+                4. **解决 'ambiguous' 错误**：如果 index 名称与列名冲突，务必在 `reset_index` 前执行 `df.index.name = None`。
+                5. **日期处理**：查看示例数据，如果日期列是 '24Q1' 这种字符串，不要使用 `.dt` 属性，直接用字符串比较。
+                6. 在代码开头，先检查前置依赖的变量是否存在。
                 
                 输出 JSON: {{ "intent_analysis": "...", "angles": [ {{ "title": "...", "desc": "...", "summary": {{ "intent": "...", "scope": "...", "metrics": "...", "logic": "..." }}, "code": "..." }} ] }}
                 """
