@@ -23,7 +23,7 @@ st.set_page_config(
 )
 
 # --- 模型配置 ---
-MODEL_FAST = "gemini-2.0-flash"           
+MODEL_FAST = "gemini-1.5-flash"           # 路由 & 简单洞察
 MODEL_SMART = "gemini-3-pro-preview"      # 写代码 & 深度分析
 
 # --- 常量定义 ---
@@ -59,21 +59,17 @@ def inject_custom_css():
         /* =================================================================
            1. 侧边栏按钮终极修复
            ================================================================= */
-        
-        /* 让原生 Header 透明，且不阻挡下方点击 */
         header[data-testid="stHeader"] {
             background-color: transparent !important;
             pointer-events: none !important; 
             z-index: 1000010 !important;
         }
 
-        /* 恢复 Header 内部按钮的点击能力 */
         header[data-testid="stHeader"] button {
             pointer-events: auto !important;
             color: var(--pc-text-sub) !important;
         }
 
-        /* 侧边栏收起/展开按钮样式 */
         [data-testid="stSidebarCollapsedControl"] {
             display: block !important;
             position: fixed !important;
@@ -390,9 +386,8 @@ if st.session_state.messages and st.session_state.messages[-1]["role"] == "user"
         关联键: `{JOIN_KEY}`
         """
 
-        # 1. 意图识别 (强化优化版)
+        # 1. 意图识别
         with st.status("🔄 思考中...", expanded=False) as status:
-            # 使用 Few-Shot Prompting 强制纠正“提取”类意图
             prompt_router = f"""
             你是一个精准的意图分类专家。请判断用户问题属于以下哪一类：
             
@@ -402,16 +397,10 @@ if st.session_state.messages and st.session_state.messages[-1]["role"] == "user"
             1. simple (简单取数): 
                - 包含明确的“提取”、“查询”、“列出”、“多少”、“数据”等关键词。
                - 即使涉及多个字段（如：销售额、销量、时间），只要目的是获取原始数据或统计表，都算 simple。
-               - 例子: "帮我提取康缘的销售额、销售量、时间" -> simple
-               - 例子: "查一下K药的销量" -> simple
-               - 例子: "列出销售额过亿的产品" -> simple
                
             2. analysis (深度分析): 
                - 询问“为什么”、“原因”、“趋势”、“表现如何”、“评价”。
                - 需要多维度拆解、归因分析或生成文字报告。
-               - 例子: "分析一下为什么销量下降" -> analysis
-               - 例子: "康缘的市场表现如何" -> analysis
-               - 例子: "从省份维度分析增长趋势" -> analysis
                
             3. irrelevant (无关): 非业务数据问题。
             
@@ -427,7 +416,7 @@ if st.session_state.messages and st.session_state.messages[-1]["role"] == "user"
             intent = clean_json_string(resp.text).get('type', 'simple')
             status.update(label=f"意图: {intent.upper()}", state="complete")
 
-        # 2. 简单查询
+        # 2. 简单查询 (优化摘要字段)
         if intent == 'simple':
             with st.spinner(f"⚡ 正在生成代码 ({MODEL_SMART})..."):
                 prompt_code = f"""
@@ -439,20 +428,27 @@ if st.session_state.messages and st.session_state.messages[-1]["role"] == "user"
                 2. 使用 `pd.merge` 关联两表。
                 3. 若无结果返回空表；结果存为 `result`。
                 
-                输出 JSON: {{ "summary": {{ "intent": "...", "metrics": "...", "logic": "..." }}, "code": "..." }}
+                【摘要生成规则 (Summary)】
+                - scope (范围): 数据的筛选范围，如 "2024年", "华东地区", "全量"。
+                - metrics (指标): 用户查询的核心指标，如 "销售额", "销量"。
+                - logic (加工逻辑): 简述筛选和计算步骤（如“按产品汇总销售额”），**严禁**提及“表关联”、“Left Join”、“Merge”等技术术语。
+                
+                输出 JSON: {{ "summary": {{ "intent": "简单取数", "scope": "...", "metrics": "...", "logic": "..." }}, "code": "..." }}
                 """
                 resp_code = safe_generate(client, MODEL_SMART, prompt_code, "application/json")
                 plan = clean_json_string(resp_code.text)
             
             if plan:
                 s = plan.get('summary', {})
+                # UI 优化：顺序调整为 意图 -> 范围 -> 指标 -> 加工逻辑
                 st.markdown(f"""
                 <div class="summary-box">
                     <div class="summary-title">⚡ 取数执行协议</div>
                     <ul class="summary-list">
-                        <li><span class="summary-label">意图</span> {s.get('intent', '-')}</li>
+                        <li><span class="summary-label">意图</span> {s.get('intent', '取数')}</li>
+                        <li><span class="summary-label">范围</span> {s.get('scope', '全量')}</li>
                         <li><span class="summary-label">指标</span> {s.get('metrics', '-')}</li>
-                        <li><span class="summary-label">逻辑</span> {s.get('logic', '-')}</li>
+                        <li><span class="summary-label">加工逻辑</span> {s.get('logic', '-')}</li>
                     </ul>
                 </div>
                 """, unsafe_allow_html=True)
@@ -541,4 +537,3 @@ if st.session_state.messages and st.session_state.messages[-1]["role"] == "user"
         else:
             st.info("请询问数据相关问题。")
             st.session_state.messages.append({"role": "assistant", "type": "text", "content": "请询问数据相关问题。"})
-
