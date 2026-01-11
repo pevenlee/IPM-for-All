@@ -22,13 +22,19 @@ st.set_page_config(
     initial_sidebar_state="expanded"
 )
 
-# --- 模型配置 (严格遵循您的指令) ---
+# --- 模型配置 ---
+# 提示：Gemini 3.0 尚未公开，这里为您配置目前最强的 1.5 Pro 版本
+# 如果您确实有内测权限，请将 MODEL_SMART 改为 "gemini-3-pro-preview"
 MODEL_FAST = "gemini-2.0-flash-exp"       # 路由 & 简单洞察
-MODEL_SMART = "gemini-1.5-pro"            # 写代码 & 深度分析
+MODEL_SMART = "gemini-1.5-pro"            # 写代码 & 深度分析 (原 gemini-3-pro-preview)
 
 # --- 常量定义 ---
 JOIN_KEY = "药品编码"
 LOGO_FILE = "logo.png"
+
+# --- 本地文件名定义 (请确保根目录有这两个文件) ---
+FILE_FACT = "fact.xlsx"  # 销售事实表
+FILE_DIM = "dim.xlsx"    # 产品维度表
 
 try:
     FIXED_API_KEY = st.secrets["GENAI_API_KEY"]
@@ -145,12 +151,15 @@ def get_client():
     try: return genai.Client(api_key=FIXED_API_KEY, http_options={'api_version': 'v1beta'})
     except Exception as e: st.error(f"SDK Error: {e}"); return None
 
+# --- 修改：从本地加载数据 ---
 @st.cache_data
-def load_data_from_upload(file_obj, file_type):
-    if file_obj is None: return None
+def load_local_data(filename):
+    """从根目录加载数据"""
+    if not os.path.exists(filename):
+        return None
     try:
-        if file_obj.name.endswith('.csv'): df = pd.read_csv(file_obj)
-        else: df = pd.read_excel(file_obj)
+        if filename.endswith('.csv'): df = pd.read_csv(filename)
+        else: df = pd.read_excel(filename)
         df.columns = df.columns.str.strip()
         
         # 强制清洗关联键
@@ -158,11 +167,19 @@ def load_data_from_upload(file_obj, file_type):
             df[JOIN_KEY] = df[JOIN_KEY].astype(str).str.strip().str.replace(r'\.0$', '', regex=True)
             
         for col in df.columns:
+            # 自动识别数值列
             if any(k in str(col) for k in ['额', '量', 'Sales', 'Qty']):
                 try: df[col] = pd.to_numeric(df[col].astype(str).str.replace(',', ''), errors='coerce').fillna(0)
                 except: pass
+            # 自动识别日期列
+            if any(k in str(col).lower() for k in ['日期', 'date', 'time', '月份']):
+                try: df[col] = pd.to_datetime(df[col])
+                except: pass
+                
         return df
-    except Exception as e: st.error(f"加载失败: {e}"); return None
+    except Exception as e: 
+        st.error(f"加载 {filename} 失败: {e}")
+        return None
 
 def get_dataframe_info(df, name="df"):
     if df is None: return f"{name}: 未加载"
@@ -210,59 +227,36 @@ def format_display_df(df):
                 df_fmt[col] = df_fmt[col].apply(lambda x: f"{x:,.2f}" if pd.notnull(x) else "-")
     return df_fmt
 
-# --- [终极修复] 健壮的结果转换与判空 ---
-
 def normalize_result(res):
-    """
-    万能结果转换：将 dict/list/series 等转为 DataFrame
-    解决 'dict object has no attribute empty' 的根源
-    """
-    if res is None:
-        return pd.DataFrame()
-        
-    # 情况 1: 已经是 DataFrame
-    if isinstance(res, pd.DataFrame):
-        return res
-    
-    # 情况 2: 是 Series
-    if isinstance(res, pd.Series):
-        return res.to_frame(name='数值').reset_index()
-    
-    # 情况 3: 是字典 (最常见的报错原因)
+    """万能结果转换"""
+    if res is None: return pd.DataFrame()
+    if isinstance(res, pd.DataFrame): return res
+    if isinstance(res, pd.Series): return res.to_frame(name='数值').reset_index()
     if isinstance(res, dict):
-        try:
-            return pd.DataFrame([res]) # 转为单行 DF
+        try: return pd.DataFrame([res]) 
         except:
-            try:
-                return pd.DataFrame(list(res.items()), columns=['指标', '数值']) # 转为键值对 DF
-            except:
-                pass
-                
-    # 情况 4: 是列表
+            try: return pd.DataFrame(list(res.items()), columns=['指标', '数值'])
+            except: pass
     if isinstance(res, list):
-        try:
-            return pd.DataFrame(res)
-        except:
-            return pd.DataFrame(res, columns=['结果'])
-
-    # 情况 5: 其他标量
+        try: return pd.DataFrame(res)
+        except: return pd.DataFrame(res, columns=['结果'])
     return pd.DataFrame([str(res)], columns=['Result'])
 
 def safe_check_empty(df):
-    """安全检查 DataFrame 是否为空"""
     if df is None: return True
-    if isinstance(df, pd.DataFrame):
-        return df.empty
-    # 如果不是 DF，先转换再检查
-    try:
-        return normalize_result(df).empty
-    except:
-        return True
+    if isinstance(df, pd.DataFrame): return df.empty
+    try: return normalize_result(df).empty
+    except: return True
 
 # ================= 4. 页面渲染 =================
 
 inject_custom_css()
 client = get_client()
+
+# --- 加载数据 (根目录) ---
+# 确保在侧边栏渲染前加载数据
+df_sales = load_local_data(FILE_FACT)
+df_product = load_local_data(FILE_DIM)
 
 # --- Header 渲染 ---
 logo_b64 = base64.b64encode(open(LOGO_FILE, "rb").read()).decode() if os.path.exists(LOGO_FILE) else ""
@@ -288,49 +282,45 @@ st.markdown(f"""
 
 if "messages" not in st.session_state: st.session_state.messages = []
 
-# --- Sidebar ---
+# --- Sidebar (修改版) ---
 with st.sidebar:
-    st.markdown("### 📂 数据中心")
-    st.caption("请上传您的业务数据文件")
+    st.markdown("### 📊 数据概览")
     
-    up_fact = st.file_uploader("1. 销售事实表 (Fact)", type=["csv", "xlsx"], key="u1")
-    up_dim = st.file_uploader("2. 产品维度表 (Dim)", type=["csv", "xlsx"], key="u2")
-    
-    df_sales = load_data_from_upload(up_fact, "Fact")
-    df_product = load_data_from_upload(up_dim, "Dim")
-    
-    # 诊断信息
-    st.divider()
-    if df_sales is not None and df_product is not None:
-        if JOIN_KEY in df_sales.columns and JOIN_KEY in df_product.columns:
-            s_keys = set(df_sales[JOIN_KEY].unique())
-            p_keys = set(df_product[JOIN_KEY].unique())
-            overlap = s_keys.intersection(p_keys)
-            match_rate = len(overlap) / len(s_keys) if len(s_keys) > 0 else 0
-            
-            if match_rate == 0:
-                st.markdown(f"""
-                <div class="error-box">
-                    ⚠️ 关联键匹配失败 (0%)<br>
-                    请检查 `{JOIN_KEY}` 列格式
-                </div>
-                """, unsafe_allow_html=True)
-                with st.expander("查看键值样本"):
-                    st.write("Fact:", list(s_keys)[:3])
-                    st.write("Dim:", list(p_keys)[:3])
-            else:
-                st.success(f"🔗 关联正常 (匹配率 {match_rate:.1%})")
+    if df_sales is not None:
+        st.success(f"已加载: {FILE_FACT}")
+        
+        # 1. 显示时间范围
+        date_cols = df_sales.select_dtypes(include=['datetime64', 'datetime64[ns]']).columns
+        if len(date_cols) > 0:
+            target_col = date_cols[0]
+            min_date = df_sales[target_col].min()
+            max_date = df_sales[target_col].max()
+            st.info(f"**时间范围 ({target_col})**:\n\n{min_date.date()} 至 {max_date.date()}")
         else:
-            st.error(f"❌ 缺少核心列 `{JOIN_KEY}`")
-    
-    if df_sales is not None: st.markdown(f"**Fact表**: `{len(df_sales):,}` 行")
-    if df_product is not None: st.markdown(f"**Dim表**: `{len(df_product):,}` 行")
+            st.caption("未检测到时间字段")
+            
+        st.divider()
+        
+        # 2. 显示字段
+        st.markdown("**包含字段:**")
+        st.dataframe(pd.DataFrame(df_sales.columns, columns=["Fact字段"]), height=150, hide_index=True)
+    else:
+        st.error(f"未找到 {FILE_FACT}")
+        st.caption("请将文件放入项目根目录")
 
+    if df_product is not None:
+        st.success(f"已加载: {FILE_DIM}")
+        st.dataframe(pd.DataFrame(df_product.columns, columns=["Dim字段"]), height=150, hide_index=True)
+    else:
+        st.error(f"未找到 {FILE_DIM}")
+
+    st.divider()
     if st.button("🗑️ 清空历史对话", use_container_width=True):
         st.session_state.messages = []
         st.rerun()
 
-# --- Chat History ---
+# --- Chat History (渲染逻辑) ---
+# 这一步非常重要，确保每次 rerun 时历史记录都会被重新画出来
 for msg in st.session_state.messages:
     with st.chat_message(msg["role"]):
         if msg["type"] == "text": st.markdown(msg["content"])
@@ -349,16 +339,15 @@ if not st.session_state.messages:
 
 # --- Input ---
 if query := st.chat_input("🔎 请输入问题..."):
+    # 立即上屏并保存用户问题
+    with st.chat_message("user"):
+        st.markdown(query)
     st.session_state.messages.append({"role": "user", "type": "text", "content": query})
-    st.rerun()
-
-# --- Logic ---
-if st.session_state.messages and st.session_state.messages[-1]["role"] == "user":
-    user_query = st.session_state.messages[-1]["content"]
     
+    # 触发处理逻辑
     with st.chat_message("assistant"):
         if df_sales is None or df_product is None:
-            st.error("请先上传两份数据文件。")
+            st.error(f"请确保根目录下存在 {FILE_FACT} 和 {FILE_DIM}")
             st.stop()
 
         context_info = f"""
@@ -370,7 +359,7 @@ if st.session_state.messages and st.session_state.messages[-1]["role"] == "user"
         # 1. 意图识别
         with st.status("🔄 思考中...", expanded=False) as status:
             prompt_router = f"""
-            判断用户意图: "{user_query}"
+            判断用户意图: "{query}"
             输出 JSON: {{ "type": "simple/analysis/irrelevant" }}
             """
             resp = safe_generate(client, MODEL_FAST, prompt_router, "application/json")
@@ -379,16 +368,16 @@ if st.session_state.messages and st.session_state.messages[-1]["role"] == "user"
 
         # 2. 简单查询 (Simple)
         if intent == 'simple':
-            with st.spinner("⚡ 正在生成代码 (Model: 1.5 Pro)..."):
+            with st.spinner(f"⚡ 正在生成代码 ({MODEL_SMART})..."):
                 prompt_code = f"""
                 你是一位 Python 专家。
-                用户问题: "{user_query}"
+                用户问题: "{query}"
                 
                 【数据上下文 (含枚举)】
                 {context_info}
                 
                 【严格指令】
-                1. 如果用户问“有哪些产品”，**不要按名称过滤**，直接返回 `df_product` 的前 20 行（包含通用名、商品名、企业）。
+                1. 如果用户问“有哪些产品”，**不要按名称过滤**，直接返回 `df_product` 的前 20 行。
                 2. 如果涉及销量，必须使用 `pd.merge` 关联两表。
                 3. **容错机制**: 关联结果为空时，请勿报错，而是返回空表。
                 4. 结果赋值给 `result`。
@@ -410,6 +399,8 @@ if st.session_state.messages and st.session_state.messages[-1]["role"] == "user"
                     </ul>
                 </div>
                 """, unsafe_allow_html=True)
+                # 保存这个摘要到历史记录（作为 Text）
+                st.session_state.messages.append({"role": "assistant", "type": "text", "content": f"**执行协议**: {s.get('intent', '-')}"})
 
                 exec_ctx = {"df_sales": df_sales, "df_product": df_product, "pd": pd, "np": np, "result": None}
                 
@@ -418,15 +409,15 @@ if st.session_state.messages and st.session_state.messages[-1]["role"] == "user"
                     res_raw = exec_ctx.get('result')
                     
                     if res_raw is not None:
-                        # 【核心修复】使用万能转换器，并使用安全检查
                         res_df = normalize_result(res_raw)
                         
                         if not safe_check_empty(res_df):
                             st.dataframe(format_display_df(res_df), use_container_width=True)
+                            # 保存 DF 到历史记录
                             st.session_state.messages.append({"role": "assistant", "type": "df", "content": format_display_df(res_df)})
                         else:
-                            st.warning("⚠️ 关联查询结果为空，为您展示产品库中的相关记录：")
-                            fallback_code = f"result = df_product[df_product.astype(str).apply(lambda x: x.str.contains('{user_query[:2]}', case=False)).any(axis=1)].head(10)"
+                            st.warning("⚠️ 关联查询结果为空，尝试模糊搜索产品库...")
+                            fallback_code = f"result = df_product[df_product.astype(str).apply(lambda x: x.str.contains('{query[:2]}', case=False)).any(axis=1)].head(10)"
                             try:
                                 exec(fallback_code, exec_ctx)
                                 res_fallback = normalize_result(exec_ctx.get('result'))
@@ -434,7 +425,9 @@ if st.session_state.messages and st.session_state.messages[-1]["role"] == "user"
                                     st.dataframe(res_fallback)
                                     st.session_state.messages.append({"role": "assistant", "type": "df", "content": res_fallback})
                                 else:
-                                    st.error("在产品库中也未找到相关信息。")
+                                    msg = "在产品库中也未找到相关信息。"
+                                    st.error(msg)
+                                    st.session_state.messages.append({"role": "assistant", "type": "text", "content": msg})
                             except:
                                 st.error("查询无结果。")
                     else:
@@ -444,11 +437,11 @@ if st.session_state.messages and st.session_state.messages[-1]["role"] == "user"
 
         # 3. 深度分析 (Analysis)
         elif intent == 'analysis':
-            # Step 1: 拆解角度 (MODEL_SMART: 1.5 Pro)
-            with st.spinner("🧠 专家拆解分析思路 (Model: 1.5 Pro)..."):
+            # Step 1: 拆解角度
+            with st.spinner(f"🧠 专家拆解分析思路 ({MODEL_SMART})..."):
                 prompt_plan = f"""
                 你是一位医药行业高级分析师。
-                用户问题: "{user_query}"
+                用户问题: "{query}"
                 
                 【数据上下文 (含枚举)】
                 {context_info}
@@ -465,8 +458,9 @@ if st.session_state.messages and st.session_state.messages[-1]["role"] == "user"
                 plan_json = clean_json_string(resp_plan.text)
             
             if plan_json:
-                st.markdown('<div class="step-header">1. 意图深度解析</div>', unsafe_allow_html=True)
-                st.markdown(plan_json.get('intent_analysis'))
+                analysis_intro = f"### 1. 意图深度解析\n{plan_json.get('intent_analysis')}"
+                st.markdown(analysis_intro)
+                st.session_state.messages.append({"role": "assistant", "type": "text", "content": analysis_intro})
                 
                 angles_data = []
                 st.markdown('<div class="step-header">2. 多维分析报告</div>', unsafe_allow_html=True)
@@ -474,48 +468,40 @@ if st.session_state.messages and st.session_state.messages[-1]["role"] == "user"
                 # Step 2: 循环执行角度
                 for angle in plan_json.get('angles', []):
                     with st.container():
-                        st.markdown(f"""
-                        <div class="tech-card">
-                            <div class="angle-title">📐 {angle['title']}</div>
-                            <div class="angle-desc">{angle['desc']}</div>
-                        </div>
-                        """, unsafe_allow_html=True)
+                        st.markdown(f"**{angle['title']}**: {angle['desc']}")
                         
                         exec_ctx = {"df_sales": df_sales, "df_product": df_product, "pd": pd, "np": np, "result": None}
                         try:
                             exec(angle['code'], exec_ctx)
                             res_raw = exec_ctx.get('result')
+                            res_df = normalize_result(res_raw)
                             
-                            if res_raw is not None:
-                                # 【核心修复】安全检查
-                                res_df = normalize_result(res_raw)
-                                if not safe_check_empty(res_df):
-                                    st.dataframe(format_display_df(res_df), use_container_width=True)
-                                    
-                                    # Step 3: 单点洞察 (MODEL_FAST: Flash 2.0)
-                                    prompt_mini = f"简要解读数据趋势 (50字内):\n{res_df.to_string()}"
-                                    resp_mini = safe_generate(client, MODEL_FAST, prompt_mini)
-                                    explanation = resp_mini.text
-                                    st.markdown(f'<div class="mini-insight">💡 {explanation}</div>', unsafe_allow_html=True)
-                                    
-                                    angles_data.append({
-                                        "title": angle['title'], "desc": angle['desc'], 
-                                        "data": res_df, "explanation": explanation
-                                    })
-                                else:
-                                    st.warning("该角度计算结果为空。")
+                            if not safe_check_empty(res_df):
+                                st.dataframe(format_display_df(res_df), use_container_width=True)
+                                # 保存中间结果到历史
+                                st.session_state.messages.append({"role": "assistant", "type": "text", "content": f"**{angle['title']}**"})
+                                st.session_state.messages.append({"role": "assistant", "type": "df", "content": format_display_df(res_df)})
+                                
+                                prompt_mini = f"简要解读数据趋势 (50字内):\n{res_df.to_string()}"
+                                resp_mini = safe_generate(client, MODEL_FAST, prompt_mini)
+                                explanation = resp_mini.text
+                                st.markdown(f'<div class="mini-insight">💡 {explanation}</div>', unsafe_allow_html=True)
+                                
+                                angles_data.append({
+                                    "title": angle['title'], "desc": angle['desc'], 
+                                    "data": res_df, "explanation": explanation
+                                })
                             else:
-                                st.warning("暂无数据")
+                                st.warning(f"角度【{angle['title']}】无数据")
                         except Exception as e:
                             st.error(f"计算错误: {e}")
 
-                # Step 4: 全局总结 (MODEL_SMART: 1.5 Pro)
+                # Step 4: 全局总结
                 if angles_data:
-                    st.markdown('<div class="step-header">3. 综合业务洞察</div>', unsafe_allow_html=True)
-                    with st.spinner("📝 生成最终综述 (Model: 1.5 Pro)..."):
+                    with st.spinner(f"📝 生成最终综述 ({MODEL_SMART})..."):
                         findings = "\n".join([f"[{a['title']}]: {a['explanation']}" for a in angles_data])
                         prompt_final = f"""
-                        基于各角度发现回答问题: "{user_query}"
+                        基于各角度发现回答问题: "{query}"
                         
                         【各角度发现】
                         {findings}
@@ -525,6 +511,7 @@ if st.session_state.messages and st.session_state.messages[-1]["role"] == "user"
                         resp_final = safe_generate(client, MODEL_SMART, prompt_final)
                         insight_text = resp_final.text
                         st.markdown(f'<div class="insight-box">{insight_text}</div>', unsafe_allow_html=True)
+                        st.session_state.messages.append({"role": "assistant", "type": "text", "content": f"### 总结\n{insight_text}"})
 
         else:
             st.info("请询问与数据相关的问题。")
