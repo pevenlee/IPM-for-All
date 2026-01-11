@@ -391,6 +391,10 @@ def render_protocol_card(summary):
     </div>
     """, unsafe_allow_html=True)
 
+# [关键修复] 回调函数，专门用于处理动态按钮点击，防止rerun时丢失状态
+def handle_followup(question):
+    st.session_state.messages.append({"role": "user", "type": "text", "content": question})
+
 # ================= 4. 页面渲染 =================
 
 inject_custom_css()
@@ -603,9 +607,9 @@ if st.session_state.messages and st.session_state.messages[-1]["role"] == "user"
                 except Exception as e:
                     st.error(f"代码错误: {e}")
 
-# 3. 深度分析
+        # 3. 深度分析
         elif intent == 'analysis':
-            # [修复2] 使用 copy() 防止数据在分析过程中被意外修改污染全局缓存
+            # [关键修复] 使用 copy() 防止数据在分析过程中被意外修改污染全局缓存
             shared_ctx = {
                 "df_sales": df_sales.copy(), 
                 "df_product": df_product.copy(), 
@@ -696,7 +700,7 @@ if st.session_state.messages and st.session_state.messages[-1]["role"] == "user"
                         st.markdown(f'<div class="insight-box">{insight}</div>', unsafe_allow_html=True)
                         st.session_state.messages.append({"role": "assistant", "type": "text", "content": f"### 总结\n{insight}"})
 
-                    # === Step 3. 智能追问推荐 ===
+                    # === Step 3. 智能追问推荐 (使用 on_click 修复版) ===
                     with st.spinner("🤔 正在思考后续追问..."):
                         prompt_next = f"""
                         基于以下分析结论和数据结构，推荐 2 个用户可能感兴趣的后续深度追问问题。
@@ -713,20 +717,16 @@ if st.session_state.messages and st.session_state.messages[-1]["role"] == "user"
                         resp_next = safe_generate(client, MODEL_FAST, prompt_next, "application/json")
                         next_questions = clean_json_string(resp_next.text)
 
+                    # 渲染追问按钮
                     if isinstance(next_questions, list) and len(next_questions) > 0:
                         st.markdown("### 🧐 还可以继续追问")
                         c1, c2 = st.columns(2)
                         
-                        if c1.button(f"👉 {next_questions[0]}", use_container_width=True):
-                            st.session_state.messages.append({"role": "user", "type": "text", "content": next_questions[0]})
-                            st.rerun()
+                        # [关键修复] 使用 on_click 回调，确保点击事件能穿透 Rerun
+                        c1.button(f"👉 {next_questions[0]}", use_container_width=True, on_click=handle_followup, args=(next_questions[0],))
                             
                         if len(next_questions) > 1:
-                            if c2.button(f"👉 {next_questions[1]}", use_container_width=True):
-                                st.session_state.messages.append({"role": "user", "type": "text", "content": next_questions[1]})
-                                st.rerun()
-                                
+                            c2.button(f"👉 {next_questions[1]}", use_container_width=True, on_click=handle_followup, args=(next_questions[1],))
         else:
             st.info("请询问数据相关问题。")
             st.session_state.messages.append({"role": "assistant", "type": "text", "content": "请询问数据相关问题。"})
-
