@@ -22,7 +22,7 @@ st.set_page_config(
     initial_sidebar_state="expanded"
 )
 
-# --- 模型配置 (严格基于您的最新文件) ---
+# --- 模型配置 ---
 MODEL_FAST = "gemini-2.0-flash-exp"       # 路由 & 简单洞察
 MODEL_SMART = "gemini-3-pro-preview"      # 写代码 & 深度分析
 
@@ -32,7 +32,7 @@ LOGO_FILE = "logo.png"
 
 # --- 本地文件名定义 ---
 FILE_FACT = "fact.xlsx"      # 销售事实表
-FILE_DIM = "ipmdata.xlsx"    # 产品维度表 (注意：这里使用您文件中指定的 ipmdata.xlsx)
+FILE_DIM = "ipmdata.xlsx"    # 产品维度表
 
 try:
     FIXED_API_KEY = st.secrets["GENAI_API_KEY"]
@@ -56,24 +56,17 @@ def inject_custom_css():
 
         .stApp { background-color: var(--pc-bg-light); font-family: 'Inter', "Microsoft YaHei", sans-serif; color: var(--pc-text-main); }
 
-        /* =================================================================
-           1. 侧边栏控制按钮修复 (核心部分)
-           ================================================================= */
-        
-        /* 让原生 Header 透明，且不阻挡下方点击 */
         header[data-testid="stHeader"] {
             background-color: transparent !important;
             pointer-events: none !important; 
             z-index: 1000010 !important;
         }
 
-        /* 恢复 Header 内部按钮的点击能力 */
         header[data-testid="stHeader"] button {
             pointer-events: auto !important;
             color: var(--pc-text-sub) !important;
         }
 
-        /* 侧边栏收起/展开按钮样式 */
         [data-testid="stSidebarCollapsedControl"] {
             display: flex !important;
             position: fixed !important;
@@ -101,9 +94,6 @@ def inject_custom_css():
         [data-testid="stDecoration"] { display: none !important; }
         [data-testid="stToolbar"] { display: none !important; }
 
-        /* =================================================================
-           2. 自定义导航栏样式
-           ================================================================= */
         .fixed-header-container {
             position: fixed; top: 0; left: 0; width: 100%; height: 64px;
             background-color: #FFFFFF;
@@ -111,7 +101,7 @@ def inject_custom_css():
             z-index: 999999; 
             display: flex; align-items: center; justify-content: space-between;
             padding: 0 24px; border-bottom: 1px solid #E6EBF5;
-            padding-left: 70px; /* 左侧留出空隙给悬浮的展开按钮 */
+            padding-left: 70px;
         }
         
         .nav-left { display: flex; align-items: center; }
@@ -152,14 +142,32 @@ def inject_custom_css():
         .summary-list li { margin-bottom: 6px; color: var(--pc-text-main); font-size: 13px; line-height: 1.5; }
         .summary-label { font-weight: 600; color: var(--pc-text-sub); margin-right: 8px; background: #F4F6F9; padding: 2px 6px; border-radius: 4px; font-size: 11px; }
 
+        .tech-card {
+            background-color: white; padding: 24px; border-radius: 12px;
+            box-shadow: 0 2px 8px rgba(0,0,0,0.02); margin-bottom: 20px;
+            border: 1px solid #E6EBF5; transition: all 0.2s ease-in-out;
+        }
+        .tech-card:hover { transform: translateY(-2px); border-color: #B3C0D1; box-shadow: 0 8px 16px rgba(0,0,0,0.04); }
+        .angle-title { font-size: 16px; font-weight: 700; color: var(--pc-primary-blue); margin-bottom: 8px; display: flex; align-items: center; gap: 8px; }
+        .angle-desc { font-size: 13px; color: var(--pc-text-sub); line-height: 1.5; margin-bottom: 16px; }
+
         .mini-insight {
             background-color: #F8FAFC; padding: 12px 16px; border-radius: 6px;
-            font-size: 13px; color: var(--pc-text-main); margin-top: 10px; margin-bottom: 20px;
+            font-size: 13px; color: var(--pc-text-main); margin-top: 15px; 
             border: 1px solid #E6EBF5; border-left: 3px solid #FF9800;
         }
+        .insight-box {
+            background: white; padding: 24px; border-radius: 12px; position: relative;
+            box-shadow: 0 2px 8px rgba(0,0,0,0.02); border: 1px solid #E6EBF5;
+        }
+        .insight-box::before {
+            content: ''; position: absolute; left: 0; top: 12px; bottom: 12px;
+            width: 4px; background: linear-gradient(180deg, var(--pc-primary-blue) 0%, #00C853 100%);
+            border-radius: 0 4px 4px 0;
+        }
         .step-header {
-            font-weight: 700; color: var(--pc-text-main); font-size: 16px; margin-top: 30px; 
-            margin-bottom: 15px; display: flex; align-items: center;
+            font-weight: 700; color: var(--pc-text-main); font-size: 16px; margin-top: 35px; 
+            margin-bottom: 20px; display: flex; align-items: center;
         }
         .step-header::before {
             content: ''; display: inline-block; width: 4px; height: 18px;
@@ -335,7 +343,6 @@ if "messages" not in st.session_state: st.session_state.messages = []
 # --- Sidebar ---
 with st.sidebar:
     st.markdown("### 📊 数据概览")
-    
     if df_sales is not None:
         st.success(f"已加载: {FILE_FACT}")
         date_cols = df_sales.select_dtypes(include=['datetime64', 'datetime64[ns]']).columns
@@ -373,11 +380,9 @@ for msg in st.session_state.messages:
 if not st.session_state.messages:
     st.markdown("### 💡 猜你想问")
     c1, c2, c3 = st.columns(3)
-    
     def handle_preset(question):
         st.session_state.messages.append({"role": "user", "type": "text", "content": question})
         st.rerun()
-
     if c1.button("🗺️ 肿瘤产品的市场表现如何?"): handle_preset("肿瘤产品的市场表现如何?")
     if c2.button("💊 查一下K药最近的销售额"): handle_preset("查一下K药最近的销售额")
     if c3.button("📊 销售额过亿的，独家创新药有哪些"): handle_preset("销售额过亿的，独家创新药有哪些")
@@ -392,8 +397,6 @@ if query:
 # --- Core Logic ---
 if st.session_state.messages and st.session_state.messages[-1]["role"] == "user":
     user_query = st.session_state.messages[-1]["content"]
-    
-    # 获取历史上下文
     history_str = get_history_context(limit=5)
 
     with st.chat_message("assistant"):
@@ -432,14 +435,14 @@ if st.session_state.messages and st.session_state.messages[-1]["role"] == "user"
             输出 JSON: {{ "type": "simple/analysis/irrelevant" }}
             """
             resp = safe_generate(client, MODEL_FAST, prompt_router, "application/json")
-            
             if "Error" in resp.text:
                 status.update(label="API 错误", state="error")
                 st.error(f"API 调用失败: {resp.text}")
                 st.stop()
-                
             intent = clean_json_string(resp.text).get('type', 'simple')
             status.update(label=f"意图: {intent.upper()}", state="complete")
+
+        shared_ctx = {"df_sales": df_sales, "df_product": df_product, "pd": pd, "np": np}
 
         # 2. 简单查询
         if intent == 'simple':
@@ -459,7 +462,8 @@ if st.session_state.messages and st.session_state.messages[-1]["role"] == "user"
                 1. 严格按用户要求提取字段。
                 2. 使用 `pd.merge` 关联两表 (除非用户只查单表)。
                 3. **重要**: 确保所有使用的变量（如 market_share）都在代码中明确定义。不要使用未定义的变量。
-                4. 结果存为 `result`。
+                4. **绝对禁止**导入 IPython 或使用 display() 函数。
+                5. 结果存为 `result`。
                 
                 【摘要生成规则 (Summary)】
                 - scope (范围): 数据的筛选范围。
@@ -476,13 +480,13 @@ if st.session_state.messages and st.session_state.messages[-1]["role"] == "user"
                 render_protocol_card(s)
                 st.session_state.messages.append({"role": "assistant", "type": "text", "content": f"**执行协议**: {s.get('intent', '-')}"})
 
-                exec_ctx = {"df_sales": df_sales, "df_product": df_product, "pd": pd, "np": np, "result": None}
+                # 清理 result，防止污染
+                if 'result' in shared_ctx: del shared_ctx['result']
                 
                 try:
-                    exec(plan['code'], exec_ctx)
-                    res_raw = exec_ctx.get('result')
+                    exec(plan['code'], shared_ctx)
+                    res_raw = shared_ctx.get('result')
                     res_df = normalize_result(res_raw)
-                    
                     if not safe_check_empty(res_df):
                         formatted_df = format_display_df(res_df)
                         st.dataframe(formatted_df, use_container_width=True)
@@ -491,8 +495,8 @@ if st.session_state.messages and st.session_state.messages[-1]["role"] == "user"
                         st.warning("⚠️ 结果为空，尝试模糊搜索...")
                         fallback_code = f"result = df_product[df_product.astype(str).apply(lambda x: x.str.contains('{user_query[:2]}', case=False)).any(axis=1)].head(10)"
                         try:
-                            exec(fallback_code, exec_ctx)
-                            res_fallback = normalize_result(exec_ctx.get('result'))
+                            exec(fallback_code, shared_ctx)
+                            res_fallback = normalize_result(shared_ctx.get('result'))
                             if not safe_check_empty(res_fallback):
                                 st.dataframe(res_fallback)
                                 st.session_state.messages.append({"role": "assistant", "type": "df", "content": res_fallback})
@@ -520,7 +524,9 @@ if st.session_state.messages and st.session_state.messages[-1]["role"] == "user"
                 【数据上下文】 {context_info}
                 
                 请拆解 2-4 个分析角度。每个角度的代码块将被依次执行。
-                **注意**：代码块之间共享上下文。如果角度2需要用到角度1计算的变量（如 market_share），这是允许的。但请确保变量名一致。
+                **注意**：
+                1. 代码块之间共享上下文。如果角度2需要用到角度1计算的变量（如 market_share），这是允许的。但请确保变量名一致。
+                2. **绝对禁止**导入 IPython 或使用 display() 函数。
                 
                 输出 JSON: {{ "intent_analysis": "...", "angles": [ {{ "title": "...", "desc": "...", "summary": {{ "intent": "...", "scope": "...", "metrics": "...", "logic": "..." }}, "code": "..." }} ] }}
                 """
@@ -535,25 +541,17 @@ if st.session_state.messages and st.session_state.messages[-1]["role"] == "user"
                 angles_data = []
                 st.markdown('<div class="step-header">2. 多维分析报告</div>', unsafe_allow_html=True)
                 
-                # 【核心修复】创建共享的上下文环境
-                shared_ctx = {"df_sales": df_sales, "df_product": df_product, "pd": pd, "np": np}
-                
                 for angle in plan_json.get('angles', []):
                     with st.container():
                         st.markdown(f"**{angle['title']}**: {angle['desc']}")
                         
-                        # 【核心修复】在多角度分析中也渲染协议卡片
                         if 'summary' in angle:
                             render_protocol_card(angle['summary'])
                         
-                        # 每次执行前清理 result，避免拿到上一个循环的旧数据
-                        if 'result' in shared_ctx:
-                            del shared_ctx['result']
+                        if 'result' in shared_ctx: del shared_ctx['result']
                             
                         try:
-                            # 使用共享上下文执行代码
                             exec(angle['code'], shared_ctx)
-                            
                             res_raw = shared_ctx.get('result')
                             res_df = normalize_result(res_raw)
                             
