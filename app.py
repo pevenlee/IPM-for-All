@@ -188,54 +188,43 @@ def get_client():
     try: return genai.Client(api_key=FIXED_API_KEY, http_options={'api_version': 'v1beta'})
     except Exception as e: st.error(f"SDK Error: {e}"); return None
 
-# --- [核心修复] 智能容错加载函数 ---
 @st.cache_data
 def load_local_data(filename):
     if not os.path.exists(filename): return None
     try:
-        # 1. 如果后缀显式为 csv，直接用 read_csv
+        # 智能容错读取：先试 CSV (因为您提到的报错通常是 CSV 伪装成 xlsx)
         if filename.lower().endswith('.csv'):
             df = pd.read_csv(filename)
         else:
-            # 2. 尝试作为标准 Excel (xlsx) 读取
             try:
                 df = pd.read_excel(filename, engine='openpyxl')
             except Exception:
-                # 3. 如果 openpyxl 失败（如 "File is not a zip file"），说明可能是 CSV 冒充 xlsx
                 try:
                     df = pd.read_csv(filename)
                 except:
-                    # 4. 最后尝试默认读取（兼容旧版 .xls 等）
                     df = pd.read_excel(filename)
         
-        # 数据清洗：去除列名空格
         df.columns = df.columns.str.strip()
         
-        # 统一关联键格式
         if JOIN_KEY in df.columns:
             df[JOIN_KEY] = df[JOIN_KEY].astype(str).str.strip().str.replace(r'\.0$', '', regex=True)
             
         for col in df.columns:
-            # 强制转字符串，防止 object 类型混杂
             if df[col].dtype == 'object':
                 df[col] = df[col].astype(str)
 
-            # 自动清洗数值列
             if any(k in str(col) for k in ['额', '量', 'Sales', 'Qty']):
                 try: df[col] = pd.to_numeric(df[col].astype(str).str.replace(',', ''), errors='coerce').fillna(0)
                 except: pass
             
-            # 增强日期识别
             if any(k in str(col).lower() for k in ['日期', 'date', 'time', '月份', 'year', 'month', 'quarter', 'period', '年', '月', '季']):
                 try: 
-                    # 尝试转换日期，转换失败则保留原字符串（适应 24Q1 这种格式）
                     df[col] = pd.to_datetime(df[col], errors='coerce').fillna(df[col])
                 except: 
                     pass
         return df
     except Exception as e: 
-        st.error(f"文件 {filename} 读取彻底失败: {e}")
-        return None
+        st.error(f"文件 {filename} 读取彻底失败: {e}"); return None
 
 def get_dataframe_info(df, name="df"):
     if df is None: return f"{name}: 未加载"
@@ -313,6 +302,7 @@ def get_history_context(limit=5):
         context_str += f"{role}: {content}\n"
     return context_str
 
+# --- [更新] 增加 key_match 字段的渲染 ---
 def render_protocol_card(summary):
     st.markdown(f"""
     <div class="summary-box">
@@ -320,6 +310,7 @@ def render_protocol_card(summary):
         <ul class="summary-list">
             <li><span class="summary-label">意图</span> {summary.get('intent', '-')}</li>
             <li><span class="summary-label">范围</span> {summary.get('scope', '-')}</li>
+            <li><span class="summary-label">关键匹配</span> {summary.get('key_match', '未涉及特定实体')}</li>
             <li><span class="summary-label">指标</span> {summary.get('metrics', '-')}</li>
             <li><span class="summary-label">加工逻辑</span> {summary.get('logic', '-')}</li>
         </ul>
@@ -468,6 +459,7 @@ if st.session_state.messages and st.session_state.messages[-1]["role"] == "user"
         # 2. 简单查询
         if intent == 'simple':
             with st.spinner(f"⚡ 正在生成代码 ({MODEL_SMART})..."):
+                # [核心更新] Prompt 中增加了 key_match 的要求
                 prompt_code = f"""
                 你是一位 Python 专家。
                 
@@ -482,7 +474,7 @@ if st.session_state.messages and st.session_state.messages[-1]["role"] == "user"
                 【指令】 
                 1. 严格按用户要求提取字段。
                 2. 使用 `pd.merge` 关联两表 (除非用户只查单表)。
-                3. **重要**: 确保所有使用的变量（如 market_share）都在代码中明确定义。不要使用未定义的变量。
+                3. **重要**: 确保所有使用的变量（如 market_share）都在代码中明确定义。
                 4. **绝对禁止**导入 IPython 或使用 display() 函数。
                 5. 禁止使用 df.columns = [...] 强行改名，请使用 df.rename()。
                 6. **避免 'ambiguous' 错误**：如果 index name 与 column name 冲突，请在 reset_index() 前先使用 `df.index.name = None` 或重命名索引。
@@ -491,9 +483,10 @@ if st.session_state.messages and st.session_state.messages[-1]["role"] == "user"
                 【摘要生成规则 (Summary)】
                 - scope (范围): 数据的筛选范围。
                 - metrics (指标): 用户查询的核心指标。
+                - key_match (关键匹配): **必须说明**提取了用户什么词，去匹配了哪个列。例如："提取用户词 'K药' -> 模糊匹配 '商品名' 列"。
                 - logic (加工逻辑): 简述筛选和计算步骤，严禁提及“表关联”、“Merge”等技术术语。
                 
-                输出 JSON: {{ "summary": {{ "intent": "简单取数", "scope": "...", "metrics": "...", "logic": "..." }}, "code": "..." }}
+                输出 JSON: {{ "summary": {{ "intent": "简单取数", "scope": "...", "metrics": "...", "key_match": "...", "logic": "..." }}, "code": "..." }}
                 """
                 resp_code = safe_generate(client, MODEL_SMART, prompt_code, "application/json")
                 plan = clean_json_string(resp_code.text)
@@ -535,6 +528,7 @@ if st.session_state.messages and st.session_state.messages[-1]["role"] == "user"
         # 3. 深度分析
         elif intent == 'analysis':
             with st.spinner(f"🧠 专家拆解分析思路 ({MODEL_SMART})..."):
+                # [核心更新] Prompt 中增加了 key_match 的要求
                 prompt_plan = f"""
                 你是一位医药行业高级分析师。
                 
@@ -554,7 +548,7 @@ if st.session_state.messages and st.session_state.messages[-1]["role"] == "user"
                 4. **避免 'Length mismatch' 错误**：禁止使用 `df.columns = [...]` 强行改名，必须使用 `df.rename(columns={{...}})`。
                 5. 在代码开头，先检查前置依赖的变量是否存在，例如 `if 'df_filtered' not in locals(): result = pd.DataFrame()`。
                 
-                输出 JSON: {{ "intent_analysis": "...", "angles": [ {{ "title": "...", "desc": "...", "summary": {{ "intent": "...", "scope": "...", "metrics": "...", "logic": "..." }}, "code": "..." }} ] }}
+                输出 JSON: {{ "intent_analysis": "...", "angles": [ {{ "title": "...", "desc": "...", "summary": {{ "intent": "...", "scope": "...", "metrics": "...", "key_match": "...", "logic": "..." }}, "code": "..." }} ] }}
                 """
                 resp_plan = safe_generate(client, MODEL_SMART, prompt_plan, "application/json")
                 plan_json = clean_json_string(resp_plan.text)
