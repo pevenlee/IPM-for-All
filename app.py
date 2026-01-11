@@ -276,26 +276,23 @@ def format_display_df(df):
     1. 年季 (2024Q1)
     2. 年份 (2024, 无千分位)
     3. 比率/均值/单价 (1位小数)
-    4. 常规金额/销量 (整数 + 千分位) - [本次修改]
+    4. 常规金额/销量 (整数 + 千分位) [本次修复: 保留整数]
     """
     if not isinstance(df, pd.DataFrame): return df
     df_fmt = df.copy()
     
     for col in df_fmt.columns:
         col_str = str(col).lower()
-        
-        # 1. 尝试转换为数值
         is_numeric = pd.api.types.is_numeric_dtype(df_fmt[col])
         
-        # 如果是 object 但看起来像数字，尝试转换
+        # 尝试转换伪装成字符串的数字
         if not is_numeric and df_fmt[col].dtype == 'object' and 'id' not in col_str and '编码' not in col_str:
             try:
                 temp = pd.to_numeric(df_fmt[col], errors='coerce')
                 # 只有当转换后非空值占比高时，才认为是数值列
                 if temp.notnull().sum() > 0:
                     is_numeric = True
-                    # [关键修复] 将转换后的 numeric Series 赋值回去，否则后续 lambda x: f"{x:.2f}" 遇到字符串会报错
-                    df_fmt[col] = temp
+                    df_fmt[col] = temp # 关键：赋值回去
             except: pass
 
         if is_numeric:
@@ -307,16 +304,14 @@ def format_display_df(df):
                 
             # B. 1位小数: 百分比/比率/均值/价格/份额
             elif any(x in col_str for x in ['率', '比', 'ratio', 'share', '同比', '环比', '%', '价', 'price', 'avg', '均', 'average', '贡献', '份额']):
-                # 如果数据已经是 0.25 这种小数
                 if df_fmt[col].mean() < 1.1 and df_fmt[col].max() < 10: 
                      df_fmt[col] = df_fmt[col].apply(lambda x: f"{x:.1%}" if pd.notnull(x) else "-")
-                # 如果数据已经是 25 这种整数 或 价格/均值
                 else:
                      df_fmt[col] = df_fmt[col].apply(lambda x: f"{x:,.1f}" if pd.notnull(x) else "-")
                      if any(k in col_str for k in ['率', '比', 'ratio', '%', 'share', '份额']):
                          df_fmt[col] = df_fmt[col].apply(lambda x: x + "%" if x != "-" and "%" not in x else x)
 
-            # C. 常规金额/销量 -> 0位小数 (整数) + 千分位
+            # C. 常规金额/销量 -> 整数 + 千分位
             else:
                 df_fmt[col] = df_fmt[col].apply(lambda x: f"{x:,.0f}" if pd.notnull(x) else "-")
         
@@ -325,10 +320,9 @@ def format_display_df(df):
             # D. 年季/日期处理
             if pd.api.types.is_datetime64_any_dtype(df_fmt[col]):
                 if any(x in col_str for x in ['季', 'quarter']):
-                     df_fmt[col] = df_fmt[col].dt.to_period('Q').astype(str) # 变成 2024Q1
+                     df_fmt[col] = df_fmt[col].dt.to_period('Q').astype(str)
                 else:
                      df_fmt[col] = df_fmt[col].dt.strftime('%Y-%m-%d')
-            
             elif df_fmt[col].dtype == 'object' and any(x in col_str for x in ['季', 'quarter']):
                  try:
                      temp_date = pd.to_datetime(df_fmt[col], errors='coerce')
@@ -505,7 +499,7 @@ if st.session_state.messages and st.session_state.messages[-1]["role"] == "user"
         
         【时间计算强制规则】
         1. **同比完整性校验**：在计算同比（Year-over-Year）时，必须检查基准期数据是否完整。
-           - 场景：如果数据起始于 2023Q4（即2023年只有1个季度数据），而2024年有全年数据。
+           - 场景：如果数据起始于 2023Q4，而2024年有全年数据。
            - 禁止：绝对禁止计算 "2024全年 vs 2023全年" 的同比。
            - 替代：应自动调整为 "2024Q4 vs 2023Q4" 或仅展示最新完整周期。
         2. **市场规模默认口径**：当用户询问“市场规模”且未明确指定时间范围（如“2023年”、“上季度”）时：
@@ -665,17 +659,22 @@ if st.session_state.messages and st.session_state.messages[-1]["role"] == "user"
                         if 'summary' in angle:
                             render_protocol_card(angle['summary'])
                         
-                        # 清除上一轮的 result，防止变量残留
-                        if 'result' in shared_ctx: del shared_ctx['result']
-                            
+                        # [智能容错] 预设 result=None, 并记录现有变量防止 NameError
+                        shared_ctx['result'] = None
+                        pre_vars = set(shared_ctx.keys())
+                        
                         try:
                             exec(angle['code'], shared_ctx)
                             res_raw = shared_ctx.get('result')
                             
-                            # 调试信息：如果读不到数据，在后台打印一下生成的代码，方便排查
+                            # [智能容错] 如果 result 仍为空，自动扫描新生成的 DataFrame
                             if res_raw is None:
-                                print(f"Warning: No 'result' variable found in code execution for angle: {angle['title']}")
-                                print("Generated Code:", angle['code'])
+                                post_vars = set(shared_ctx.keys())
+                                new_vars = post_vars - pre_vars
+                                candidates = [v for v in new_vars if isinstance(shared_ctx[v], pd.DataFrame)]
+                                if candidates: 
+                                    res_raw = shared_ctx[candidates[-1]]
+                                    # print(f"Fallback: Used variable '{candidates[-1]}' as result")
 
                             res_df = normalize_result(res_raw)
                             
@@ -694,9 +693,9 @@ if st.session_state.messages and st.session_state.messages[-1]["role"] == "user"
                                 st.warning(f"角度【{angle['title']}】无数据 (可能原因：筛选条件过严或代码未正确赋值 result)")
                         except Exception as e:
                             st.error(f"计算错误: {e}")
-                            # 同样打印错误代码以便调试
-                            print(f"Error in angle {angle['title']}: {e}")
-                            print("Code:", angle['code'])
+                            # 打印错误代码以便调试
+                            # print(f"Error in angle {angle['title']}: {e}")
+                            # print("Code:", angle['code'])
 
                 if angles_data:
                     with st.spinner(f"📝 生成最终综述 ({MODEL_SMART})..."):
