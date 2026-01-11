@@ -22,8 +22,8 @@ st.set_page_config(
     initial_sidebar_state="expanded"
 )
 
-# --- 模型配置 (保持不变) ---
-MODEL_FAST = "gemini-2.0-flash-exp"       # 路由 & 简单洞察
+# --- 模型配置 ---
+MODEL_FAST = "gemini-2.0-flash-exp"       # 路由 & 简单洞察 & 追问生成
 MODEL_SMART = "gemini-3-pro-preview"      # 写代码 & 深度分析
 
 # --- 常量定义 ---
@@ -676,6 +676,39 @@ if st.session_state.messages and st.session_state.messages[-1]["role"] == "user"
                         insight = resp_final.text
                         st.markdown(f'<div class="insight-box">{insight}</div>', unsafe_allow_html=True)
                         st.session_state.messages.append({"role": "assistant", "type": "text", "content": f"### 总结\n{insight}"})
+
+                    # === [新增] Step 3. 智能追问推荐 ===
+                    with st.spinner("🤔 正在思考后续追问..."):
+                        prompt_next = f"""
+                        基于以下分析结论和数据结构，推荐 2 个用户可能感兴趣的后续深度追问问题。
+                        确保问题可以通过现有数据回答。简洁明了，不要编号。
+
+                        【当前结论】
+                        {insight}
+
+                        【数据结构】
+                        {context_info}
+
+                        输出 JSON 列表: ["问题1", "问题2"]
+                        """
+                        resp_next = safe_generate(client, MODEL_FAST, prompt_next, "application/json")
+                        next_questions = clean_json_string(resp_next.text)
+
+                    # 渲染追问按钮
+                    if isinstance(next_questions, list) and len(next_questions) > 0:
+                        st.markdown("### 🧐 还可以继续追问")
+                        c1, c2 = st.columns(2)
+                        
+                        # Button 1
+                        if c1.button(f"👉 {next_questions[0]}", use_container_width=True):
+                            st.session_state.messages.append({"role": "user", "type": "text", "content": next_questions[0]})
+                            st.rerun()
+                            
+                        # Button 2
+                        if len(next_questions) > 1:
+                            if c2.button(f"👉 {next_questions[1]}", use_container_width=True):
+                                st.session_state.messages.append({"role": "user", "type": "text", "content": next_questions[1]})
+                                st.rerun()
         else:
             st.info("请询问数据相关问题。")
             st.session_state.messages.append({"role": "assistant", "type": "text", "content": "请询问数据相关问题。"})
