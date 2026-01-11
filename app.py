@@ -57,40 +57,70 @@ def inject_custom_css():
 
         .stApp { background-color: var(--pc-bg-light); font-family: 'Inter', "Microsoft YaHei", sans-serif; color: var(--pc-text-main); }
 
-        /* --- 核心修复：重现并美化侧边栏展开按钮 --- */
+        /* =================================================================
+           1. 侧边栏控制按钮修复 (核心部分)
+           ================================================================= */
+        
+        /* A. 展开按钮 (当侧边栏关闭时显示) */
         [data-testid="stSidebarCollapsedControl"] {
             display: block !important;
             position: fixed !important;
-            top: 18px !important;    /* 根据您的 Header 高度微调 */
-            left: 20px !important;
-            z-index: 1000001 !important; /* 必须比自定义 Header (999999) 高 */
+            top: 16px !important;       /* 调整垂直位置以对齐自定义Header */
+            left: 16px !important;
+            z-index: 1000002 !important; /* 最高层级，压在自定义Header上面 */
+            color: var(--pc-text-sub) !important;
+            background-color: transparent !important;
+            width: 32px;
+            height: 32px;
+        }
+        [data-testid="stSidebarCollapsedControl"]:hover {
             color: var(--pc-primary-blue) !important;
-            background-color: white !important;
-            border-radius: 50%;
-            width: 30px;
-            height: 30px;
-            box-shadow: 0 2px 5px rgba(0,0,0,0.1);
-        }
-        
-        /* 隐藏原生 Header 的其他部分，但保留折叠控制按钮的空间 */
-        header[data-testid="stHeader"] { 
-            background: transparent !important;
-            pointer-events: none; /* 让鼠标穿透 Header 点击下面的元素 */
-        }
-        /* 重新开启 Header 中按钮的点击事件 */
-        header[data-testid="stHeader"] > div:first-child {
-            pointer-events: auto;
+            background-color: #F0F7FF !important;
+            border-radius: 4px;
         }
 
-        /* --- 自定义导航栏样式 --- */
+        /* B. 顶部 Header (包含收起按钮 X) */
+        /* 不要 display:none，而是透明化，为了保留里面的 X 按钮 */
+        header[data-testid="stHeader"] {
+            background-color: transparent !important;
+            z-index: 1000001 !important; /* 保证在自定义Header之上 */
+            height: 64px !important;
+        }
+
+        /* 隐藏 Header 里的右侧菜单 (三道杠) 和 部署按钮 */
+        [data-testid="stToolbar"], 
+        [data-testid="stHeaderActionElements"] {
+            display: none !important;
+        }
+        
+        /* 隐藏 Header 顶部的彩虹条 */
+        [data-testid="stDecoration"] {
+            display: none !important;
+        }
+
+        /* 确保 Header 里的按钮（收起 X）是可见的并且颜色正确 */
+        header[data-testid="stHeader"] button {
+            color: var(--pc-text-sub) !important;
+        }
+        header[data-testid="stHeader"] button:hover {
+            color: var(--pc-primary-blue) !important;
+            background-color: transparent !important;
+        }
+
+        /* =================================================================
+           2. 自定义导航栏样式
+           ================================================================= */
         .fixed-header-container {
             position: fixed; top: 0; left: 0; width: 100%; height: 64px;
             background-color: #FFFFFF;
             box-shadow: 0 2px 12px rgba(0, 90, 222, 0.08);
-            z-index: 999999; display: flex; align-items: center; justify-content: space-between;
+            z-index: 999999; /* 比原生Header低一层，被它盖住，但原生Header是透明的 */
+            display: flex; align-items: center; justify-content: space-between;
             padding: 0 24px; border-bottom: 1px solid #E6EBF5;
-            padding-left: 60px; /* 【重要】左侧留出空间给展开按钮 */
+            padding-left: 60px; /* 【关键】左侧留出空隙给展开/收起按钮 */
         }
+        
+        /* 调整 Logo 位置，不要离按钮太近 */
         .nav-left { display: flex; align-items: center; }
         .nav-logo-img { height: 32px; width: auto; margin-right: 12px; }
         .nav-title { font-size: 18px; font-weight: 700; color: var(--pc-primary-blue); letter-spacing: 0.5px; }
@@ -116,13 +146,13 @@ def inject_custom_css():
 
         .block-container { padding-top: 80px !important; padding-bottom: 3rem !important; max-width: 1200px; }
         
-        /* 隐藏原生 Toolbar 和 Footer */
-        [data-testid="stToolbar"] { display: none !important; }
         footer { display: none !important; }
 
+        /* Streamlit 按钮样式美化 */
         div.stButton > button { border: 1px solid #E6EBF5; color: var(--pc-text-main); background: white; box-shadow: 0 1px 2px rgba(0,0,0,0.02); }
         div.stButton > button:hover { border-color: var(--pc-primary-blue); color: var(--pc-primary-blue); background-color: #F0F7FF; }
         
+        /* 报告框样式 */
         .summary-box {
             background-color: #FFFFFF; padding: 20px; border-radius: 8px;
             border: 1px solid #E6EBF5; border-left: 4px solid var(--pc-primary-blue); margin-bottom: 20px;
@@ -542,5 +572,6 @@ if query := st.chat_input("🔎 请输入问题..."):
 
         else:
             st.info("请询问与数据相关的问题。")
+
 
 
