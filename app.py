@@ -31,8 +31,8 @@ JOIN_KEY = "药品编码"
 LOGO_FILE = "logo.png"
 
 # --- 本地文件名定义 ---
-FILE_FACT = "fact.xlsx"      # 销售事实表
-FILE_DIM = "ipmdata.xlsx"    # 产品维度表
+FILE_FACT = "fact.xlsx"  
+FILE_DIM = "ipmdata.xlsx"    
 
 try:
     FIXED_API_KEY = st.secrets["GENAI_API_KEY"]
@@ -153,7 +153,7 @@ def inject_custom_css():
 
         .mini-insight {
             background-color: #F8FAFC; padding: 12px 16px; border-radius: 6px;
-            font-size: 13px; color: var(--pc-text-main); margin-top: 15px; 
+            font-size: 13px; color: var(--pc-text-main); margin-top: 10px; margin-bottom: 20px;
             border: 1px solid #E6EBF5; border-left: 3px solid #FF9800;
         }
         .insight-box {
@@ -166,8 +166,8 @@ def inject_custom_css():
             border-radius: 0 4px 4px 0;
         }
         .step-header {
-            font-weight: 700; color: var(--pc-text-main); font-size: 16px; margin-top: 35px; 
-            margin-bottom: 20px; display: flex; align-items: center;
+            font-weight: 700; color: var(--pc-text-main); font-size: 16px; margin-top: 30px; 
+            margin-bottom: 15px; display: flex; align-items: center;
         }
         .step-header::before {
             content: ''; display: inline-block; width: 4px; height: 18px;
@@ -200,6 +200,10 @@ def load_local_data(filename):
             df[JOIN_KEY] = df[JOIN_KEY].astype(str).str.strip().str.replace(r'\.0$', '', regex=True)
             
         for col in df.columns:
+            # 强制转换为字符串类型，避免 str.contains 报错
+            if df[col].dtype == 'object':
+                df[col] = df[col].astype(str)
+
             if any(k in str(col) for k in ['额', '量', 'Sales', 'Qty']):
                 try: df[col] = pd.to_numeric(df[col].astype(str).str.replace(',', ''), errors='coerce').fillna(0)
                 except: pass
@@ -256,6 +260,7 @@ def format_display_df(df):
     return df_fmt
 
 def normalize_result(res):
+    """万能结果转换：将 dict/list/series 等转为 DataFrame"""
     if res is None: return pd.DataFrame()
     if isinstance(res, pd.DataFrame): return res
     if isinstance(res, pd.Series): return res.to_frame(name='数值').reset_index()
@@ -270,6 +275,7 @@ def normalize_result(res):
     return pd.DataFrame([str(res)], columns=['Result'])
 
 def safe_check_empty(df):
+    """安全检查是否为空"""
     if df is None: return True
     if isinstance(df, pd.DataFrame): return df.empty
     try: return normalize_result(df).empty
@@ -442,6 +448,7 @@ if st.session_state.messages and st.session_state.messages[-1]["role"] == "user"
             intent = clean_json_string(resp.text).get('type', 'simple')
             status.update(label=f"意图: {intent.upper()}", state="complete")
 
+        # 共享上下文
         shared_ctx = {"df_sales": df_sales, "df_product": df_product, "pd": pd, "np": np}
 
         # 2. 简单查询
@@ -463,7 +470,9 @@ if st.session_state.messages and st.session_state.messages[-1]["role"] == "user"
                 2. 使用 `pd.merge` 关联两表 (除非用户只查单表)。
                 3. **重要**: 确保所有使用的变量（如 market_share）都在代码中明确定义。不要使用未定义的变量。
                 4. **绝对禁止**导入 IPython 或使用 display() 函数。
-                5. 结果存为 `result`。
+                5. 禁止使用 df.columns = [...] 强行改名，请使用 df.rename()。
+                6. 进行字符串匹配时，请务必使用 `case=False` 和 `na=False`。
+                7. 结果存为 `result`。
                 
                 【摘要生成规则 (Summary)】
                 - scope (范围): 数据的筛选范围。
@@ -480,20 +489,20 @@ if st.session_state.messages and st.session_state.messages[-1]["role"] == "user"
                 render_protocol_card(s)
                 st.session_state.messages.append({"role": "assistant", "type": "text", "content": f"**执行协议**: {s.get('intent', '-')}"})
 
-                # 清理 result，防止污染
                 if 'result' in shared_ctx: del shared_ctx['result']
                 
                 try:
                     exec(plan['code'], shared_ctx)
                     res_raw = shared_ctx.get('result')
                     res_df = normalize_result(res_raw)
+                    
                     if not safe_check_empty(res_df):
                         formatted_df = format_display_df(res_df)
                         st.dataframe(formatted_df, use_container_width=True)
                         st.session_state.messages.append({"role": "assistant", "type": "df", "content": formatted_df})
                     else:
                         st.warning("⚠️ 结果为空，尝试模糊搜索...")
-                        fallback_code = f"result = df_product[df_product.astype(str).apply(lambda x: x.str.contains('{user_query[:2]}', case=False)).any(axis=1)].head(10)"
+                        fallback_code = f"result = df_product[df_product.astype(str).apply(lambda x: x.str.contains('{user_query[:2]}', case=False, na=False)).any(axis=1)].head(10)"
                         try:
                             exec(fallback_code, shared_ctx)
                             res_fallback = normalize_result(shared_ctx.get('result'))
@@ -527,6 +536,8 @@ if st.session_state.messages and st.session_state.messages[-1]["role"] == "user"
                 **注意**：
                 1. 代码块之间共享上下文。如果角度2需要用到角度1计算的变量（如 market_share），这是允许的。但请确保变量名一致。
                 2. **绝对禁止**导入 IPython 或使用 display() 函数。
+                3. 禁止使用 df.columns = [...] 强行改名，请使用 df.rename()。
+                4. 在代码开头，先检查前置依赖的变量是否存在，例如 `if 'df_filtered' not in locals(): result = pd.DataFrame()`。
                 
                 输出 JSON: {{ "intent_analysis": "...", "angles": [ {{ "title": "...", "desc": "...", "summary": {{ "intent": "...", "scope": "...", "metrics": "...", "logic": "..." }}, "code": "..." }} ] }}
                 """
