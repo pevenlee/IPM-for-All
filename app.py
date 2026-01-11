@@ -24,7 +24,7 @@ st.set_page_config(
 
 # --- 模型配置 ---
 MODEL_FAST = "gemini-2.0-flash"           # 路由 & 简单洞察
-MODEL_SMART = "gemini-3-pro-preview"            # 写代码 & 深度分析 (Pro 上下文更长，适合带历史记录)
+MODEL_SMART = "gemini-3-pro-preview"            # 写代码 & 深度分析
 
 # --- 常量定义 ---
 JOIN_KEY = "药品编码"
@@ -276,12 +276,9 @@ def safe_check_empty(df):
     try: return normalize_result(df).empty
     except: return True
 
-# --- 新增：历史记录上下文提取函数 ---
+# --- 上下文提取函数 ---
 def get_history_context(limit=5):
-    """提取最近 n 轮对话（不包含当前最新的 User Query）"""
-    # session_state.messages 包含当前刚插入的 query，所以取 :-1
     history_msgs = st.session_state.messages[:-1] 
-    # 只取最后 limit * 2 条（一问一答）
     relevant_msgs = history_msgs[-(limit * 2):]
     
     context_str = ""
@@ -291,19 +288,14 @@ def get_history_context(limit=5):
     for msg in relevant_msgs:
         role = "用户" if msg["role"] == "user" else "AI助手"
         content = msg["content"]
-        
-        # 如果是 DataFrame，简化描述，避免 Token 爆炸
         if msg["type"] == "df":
             try:
-                # 尝试描述表结构
                 df_preview = msg["content"]
                 cols = list(df_preview.columns)
                 content = f"[已展示数据表: {len(df_preview)}行, 列: {cols}]"
             except:
                 content = "[已展示数据表]"
-        
         context_str += f"{role}: {content}\n"
-    
     return context_str
 
 # ================= 4. 页面渲染 =================
@@ -341,7 +333,6 @@ if "messages" not in st.session_state: st.session_state.messages = []
 # --- Sidebar ---
 with st.sidebar:
     st.markdown("### 📊 数据概览")
-    
     if df_sales is not None:
         st.success(f"已加载: {FILE_FACT}")
         date_cols = df_sales.select_dtypes(include=['datetime64', 'datetime64[ns]']).columns
@@ -379,11 +370,9 @@ for msg in st.session_state.messages:
 if not st.session_state.messages:
     st.markdown("### 💡 猜你想问")
     c1, c2, c3 = st.columns(3)
-    
     def handle_preset(question):
         st.session_state.messages.append({"role": "user", "type": "text", "content": question})
         st.rerun()
-
     if c1.button("🗺️ 肿瘤产品的市场表现如何?"): handle_preset("肿瘤产品的市场表现如何?")
     if c2.button("💊 查一下K药最近的销售额"): handle_preset("查一下K药最近的销售额")
     if c3.button("📊 销售额过亿的，独家创新药有哪些"): handle_preset("销售额过亿的，独家创新药有哪些")
@@ -398,8 +387,6 @@ if query:
 # --- Core Logic ---
 if st.session_state.messages and st.session_state.messages[-1]["role"] == "user":
     user_query = st.session_state.messages[-1]["content"]
-    
-    # 获取历史上下文
     history_str = get_history_context(limit=5)
 
     with st.chat_message("assistant"):
@@ -413,7 +400,7 @@ if st.session_state.messages and st.session_state.messages[-1]["role"] == "user"
         关联键: `{JOIN_KEY}`
         """
 
-        # 1. 意图识别 (带历史记忆)
+        # 1. 意图识别
         with st.status("🔄 思考中...", expanded=False) as status:
             prompt_router = f"""
             你是一个精准的意图分类专家。请基于用户问题和历史对话判断意图。
@@ -438,12 +425,10 @@ if st.session_state.messages and st.session_state.messages[-1]["role"] == "user"
             输出 JSON: {{ "type": "simple/analysis/irrelevant" }}
             """
             resp = safe_generate(client, MODEL_FAST, prompt_router, "application/json")
-            
             if "Error" in resp.text:
                 status.update(label="API 错误", state="error")
                 st.error(f"API 调用失败: {resp.text}")
                 st.stop()
-                
             intent = clean_json_string(resp.text).get('type', 'simple')
             status.update(label=f"意图: {intent.upper()}", state="complete")
 
@@ -453,7 +438,7 @@ if st.session_state.messages and st.session_state.messages[-1]["role"] == "user"
                 prompt_code = f"""
                 你是一位 Python 专家。
                 
-                【历史对话】(用于理解指代，如"它"、"上述产品")
+                【历史对话】(用于理解指代)
                 {history_str}
                 
                 【当前用户问题】
@@ -464,12 +449,12 @@ if st.session_state.messages and st.session_state.messages[-1]["role"] == "user"
                 【指令】 
                 1. 严格按用户要求提取字段。
                 2. 使用 `pd.merge` 关联两表 (除非用户只查单表)。
-                3. 如果用户指代上一步结果（如“只看其中销售额大于100的”），请重新生成查询代码来复现该结果并添加过滤条件。
+                3. **重要**: 确保所有使用的变量（如 market_share）都在代码中明确定义。不要使用未定义的变量。
                 4. 结果存为 `result`。
                 
                 【摘要生成规则 (Summary)】
-                - scope (范围): 数据的筛选范围，如 "2024年", "华东地区", "全量"。
-                - metrics (指标): 用户查询的核心指标，如 "销售额", "销量"。
+                - scope (范围): 数据的筛选范围。
+                - metrics (指标): 用户查询的核心指标。
                 - logic (加工逻辑): 简述筛选和计算步骤，严禁提及“表关联”、“Merge”等技术术语。
                 
                 输出 JSON: {{ "summary": {{ "intent": "简单取数", "scope": "...", "metrics": "...", "logic": "..." }}, "code": "..." }}
@@ -498,7 +483,6 @@ if st.session_state.messages and st.session_state.messages[-1]["role"] == "user"
                     exec(plan['code'], exec_ctx)
                     res_raw = exec_ctx.get('result')
                     res_df = normalize_result(res_raw)
-                    
                     if not safe_check_empty(res_df):
                         formatted_df = format_display_df(res_df)
                         st.dataframe(formatted_df, use_container_width=True)
@@ -521,7 +505,7 @@ if st.session_state.messages and st.session_state.messages[-1]["role"] == "user"
                 except Exception as e:
                     st.error(f"代码错误: {e}")
 
-        # 3. 深度分析
+        # 3. 深度分析 (修复上下文丢失问题)
         elif intent == 'analysis':
             with st.spinner(f"🧠 专家拆解分析思路 ({MODEL_SMART})..."):
                 prompt_plan = f"""
@@ -535,7 +519,9 @@ if st.session_state.messages and st.session_state.messages[-1]["role"] == "user"
                 
                 【数据上下文】 {context_info}
                 
-                请拆解 2-4 个分析角度。
+                请拆解 2-4 个分析角度。每个角度的代码块将被依次执行。
+                **注意**：代码块之间共享上下文。如果角度2需要用到角度1计算的变量（如 market_share），这是允许的。但请确保变量名一致。
+                
                 输出 JSON: {{ "intent_analysis": "...", "angles": [ {{ "title": "...", "desc": "...", "code": "..." }} ] }}
                 """
                 resp_plan = safe_generate(client, MODEL_SMART, prompt_plan, "application/json")
@@ -549,13 +535,24 @@ if st.session_state.messages and st.session_state.messages[-1]["role"] == "user"
                 angles_data = []
                 st.markdown('<div class="step-header">2. 多维分析报告</div>', unsafe_allow_html=True)
                 
+                # 【核心修复】创建共享的上下文环境
+                shared_ctx = {"df_sales": df_sales, "df_product": df_product, "pd": pd, "np": np}
+                
                 for angle in plan_json.get('angles', []):
                     with st.container():
                         st.markdown(f"**{angle['title']}**: {angle['desc']}")
-                        exec_ctx = {"df_sales": df_sales, "df_product": df_product, "pd": pd, "np": np, "result": None}
+                        
+                        # 每次执行前清理 result，避免拿到上一个循环的旧数据
+                        if 'result' in shared_ctx:
+                            del shared_ctx['result']
+                            
                         try:
-                            exec(angle['code'], exec_ctx)
-                            res_df = normalize_result(exec_ctx.get('result'))
+                            # 使用共享上下文执行代码
+                            exec(angle['code'], shared_ctx)
+                            
+                            res_raw = shared_ctx.get('result')
+                            res_df = normalize_result(res_raw)
+                            
                             if not safe_check_empty(res_df):
                                 formatted_df = format_display_df(res_df)
                                 st.dataframe(formatted_df, use_container_width=True)
