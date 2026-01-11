@@ -57,12 +57,39 @@ def inject_custom_css():
 
         .stApp { background-color: var(--pc-bg-light); font-family: 'Inter', "Microsoft YaHei", sans-serif; color: var(--pc-text-main); }
 
+        /* --- 核心修复：重现并美化侧边栏展开按钮 --- */
+        [data-testid="stSidebarCollapsedControl"] {
+            display: block !important;
+            position: fixed !important;
+            top: 18px !important;    /* 根据您的 Header 高度微调 */
+            left: 20px !important;
+            z-index: 1000001 !important; /* 必须比自定义 Header (999999) 高 */
+            color: var(--pc-primary-blue) !important;
+            background-color: white !important;
+            border-radius: 50%;
+            width: 30px;
+            height: 30px;
+            box-shadow: 0 2px 5px rgba(0,0,0,0.1);
+        }
+        
+        /* 隐藏原生 Header 的其他部分，但保留折叠控制按钮的空间 */
+        header[data-testid="stHeader"] { 
+            background: transparent !important;
+            pointer-events: none; /* 让鼠标穿透 Header 点击下面的元素 */
+        }
+        /* 重新开启 Header 中按钮的点击事件 */
+        header[data-testid="stHeader"] > div:first-child {
+            pointer-events: auto;
+        }
+
+        /* --- 自定义导航栏样式 --- */
         .fixed-header-container {
             position: fixed; top: 0; left: 0; width: 100%; height: 64px;
             background-color: #FFFFFF;
             box-shadow: 0 2px 12px rgba(0, 90, 222, 0.08);
             z-index: 999999; display: flex; align-items: center; justify-content: space-between;
             padding: 0 24px; border-bottom: 1px solid #E6EBF5;
+            padding-left: 60px; /* 【重要】左侧留出空间给展开按钮 */
         }
         .nav-left { display: flex; align-items: center; }
         .nav-logo-img { height: 32px; width: auto; margin-right: 12px; }
@@ -88,7 +115,8 @@ def inject_custom_css():
         }
 
         .block-container { padding-top: 80px !important; padding-bottom: 3rem !important; max-width: 1200px; }
-        header[data-testid="stHeader"] { display: none !important; }
+        
+        /* 隐藏原生 Toolbar 和 Footer */
         [data-testid="stToolbar"] { display: none !important; }
         footer { display: none !important; }
 
@@ -514,4 +542,5 @@ if query := st.chat_input("🔎 请输入问题..."):
 
         else:
             st.info("请询问与数据相关的问题。")
+
 
