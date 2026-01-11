@@ -23,8 +23,8 @@ st.set_page_config(
 )
 
 # --- 模型配置 ---
-MODEL_FAST = "gemini-1.5-flash"           # 路由 & 简单洞察
-MODEL_SMART = "gemini-1.5-pro"            # 深度分析 (1.5 Pro 代码能力更强，建议使用)
+MODEL_FAST = "gemini-2.0-flash"           # 路由 & 简单洞察
+MODEL_SMART = "gemini-3-pro-preview"            # 深度分析 (1.5 Pro 代码能力更强，建议使用)
 
 # --- 常量定义 ---
 JOIN_KEY = "药品编码"
@@ -549,3 +549,4 @@ if st.session_state.messages and st.session_state.messages[-1]["role"] == "user"
                         st.session_state.messages.append({"role": "assistant", "type": "text", "content": f"### 总结\n{insight}"})
         else:
             st.info("请询问数据相关问题。")
+
