@@ -541,7 +541,7 @@ if st.session_state.messages and st.session_state.messages[-1]["role"] == "user"
         if intent == 'inquiry':
             with st.spinner(f"⚡ 正在设计数据调用逻辑..."):
                 prompt_code = f"""
-                你是一位 Python 专家。
+                你是一位医药行业的 Python 专家。
                 
                 【历史对话】(用于理解指代)
                 {history_str}
@@ -732,6 +732,7 @@ if st.session_state.messages and st.session_state.messages[-1]["role"] == "user"
         else:
             st.info("请询问数据相关问题。")
             st.session_state.messages.append({"role": "assistant", "type": "text", "content": "请询问数据相关问题。"})
+
 
 
 
