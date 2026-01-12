@@ -23,7 +23,7 @@ st.set_page_config(
 )
 
 # --- 模型配置 ---
-MODEL_FAST = "gemini-2.0-flash-exp"       # 路由 & 简单洞察 & 追问生成
+MODEL_FAST = "gemini-2.0-flash"       # 路由 & 简单洞察 & 追问生成
 MODEL_SMART = "gemini-3-pro-preview"      # 写代码 & 深度分析
 
 # --- 常量定义 ---
@@ -159,7 +159,7 @@ def inject_custom_css():
         .insight-box {
             background: white; padding: 24px; border-radius: 12px; position: relative;
             box-shadow: 0 2px 8px rgba(0,0,0,0.02); border: 1px solid #E6EBF5;
-            font-size: 14px; line-height: 1.6; /* [修改] 字体调小 */
+            font-size: 14px; line-height: 1.6;
         }
         .insight-box::before {
             content: ''; position: absolute; left: 0; top: 12px; bottom: 12px;
@@ -310,10 +310,8 @@ def format_display_df(df):
                 
             # B. 1位小数: 百分比/比率/均值/价格/份额
             elif any(x in col_str for x in ['率', '比', 'ratio', 'share', '同比', '环比', '%', '价', 'price', 'avg', '均', 'average', '贡献', '份额']):
-                # 如果数据已经是 0.25 这种小数
                 if df_fmt[col].mean() < 1.1 and df_fmt[col].max() < 10: 
                      df_fmt[col] = df_fmt[col].apply(lambda x: f"{x:.1%}" if pd.notnull(x) else "-")
-                # 如果数据已经是 25 这种整数 或 价格/均值
                 else:
                      df_fmt[col] = df_fmt[col].apply(lambda x: f"{x:,.1f}" if pd.notnull(x) else "-")
                      if any(k in col_str for k in ['率', '比', 'ratio', '%', 'share', '份额']):
@@ -340,6 +338,7 @@ def format_display_df(df):
 
     return df_fmt
 
+# --- [修复版] normalize_result 永不返回 None ---
 def normalize_result(res):
     if res is None: return pd.DataFrame()
     if isinstance(res, pd.DataFrame): return res
@@ -354,11 +353,11 @@ def normalize_result(res):
         except: return pd.DataFrame(res, columns=['结果'])
     return pd.DataFrame([str(res)], columns=['Result'])
 
+# --- [修复版] safe_check_empty 增加类型检查 ---
 def safe_check_empty(df):
     if df is None: return True
-    if isinstance(df, pd.DataFrame): return df.empty
-    try: return normalize_result(df).empty
-    except: return True
+    if not isinstance(df, pd.DataFrame): return True
+    return df.empty
 
 def get_history_context(limit=5):
     history_msgs = st.session_state.messages[:-1] 
@@ -406,10 +405,12 @@ st.markdown(f"""
 <div class="fixed-header-container">
     <div class="nav-left">
         {logo_img}
+        <span class="nav-title">ChatBI Pro</span>
     </div>
     <div class="nav-center">
         <div class="nav-item">HCM</div> 
         <div class="nav-item active">ChatBI</div>
+        <div class="nav-item">Insight</div>
     </div>
     <div class="nav-right">
         <div class="nav-avatar">PRO</div>
@@ -494,6 +495,8 @@ if st.session_state.messages and st.session_state.messages[-1]["role"] == "user"
         
         【重要业务知识库】
         1. 涉及“内资/外资”时，请使用 `df_product['企业类型']` 字段。
+        2. 涉及“PDx”、“PD-1”、“PD-L1”时，请筛选 `ATC4描述` 或 `通用名` 包含 'PD-1' 或 'PD-L1' (不区分大小写)。
+        3. “K药”对应通用名“帕博利珠单抗”；“O药”对应“纳武利尤单抗”；“I药”对应“度伐利尤单抗”。
         
         【时间计算强制规则】
         1. **同比完整性校验**：在计算同比（Year-over-Year）时，必须检查基准期数据是否完整。
@@ -516,7 +519,7 @@ if st.session_state.messages and st.session_state.messages[-1]["role"] == "user"
             "{user_query}"
             
             【分类标准】
-            1. inquiry (简单取数): 
+            1. simple (简单取数): 
                - 包含明确的“提取”、“查询”、“列出”、“多少”、“数据”等关键词。
                - 用户基于上一轮结果进行简单筛选（如“只看华东的”）。
                
@@ -526,23 +529,23 @@ if st.session_state.messages and st.session_state.messages[-1]["role"] == "user"
                
             3. irrelevant (无关): 非业务数据问题。
             
-            输出 JSON: {{ "type": "inquiry/analysis/irrelevant" }}
+            输出 JSON: {{ "type": "simple/analysis/irrelevant" }}
             """
             resp = safe_generate(client, MODEL_FAST, prompt_router, "application/json")
             if "Error" in resp.text:
                 status.update(label="API 错误", state="error")
                 st.error(f"API 调用失败: {resp.text}")
                 st.stop()
-            intent = clean_json_string(resp.text).get('type', 'inquiry')
+            intent = clean_json_string(resp.text).get('type', 'simple')
             status.update(label=f"意图: {intent.upper()}", state="complete")
 
         shared_ctx = {"df_sales": df_sales.copy(), "df_product": df_product.copy(), "pd": pd, "np": np}
 
         # 2. 简单查询
-        if intent == 'inquiry':
-            with st.spinner(f"⚡ 正在搭建数据查询逻辑..."):
+        if intent == 'simple':
+            with st.spinner(f"⚡ 正在生成代码 ({MODEL_SMART})..."):
                 prompt_code = f"""
-                你是一位医药行业的 Python 专家。
+                你是一位 Python 专家。
                 
                 【历史对话】(用于理解指代)
                 {history_str}
@@ -616,7 +619,7 @@ if st.session_state.messages and st.session_state.messages[-1]["role"] == "user"
                 "np": np
             }
 
-            with st.spinner(f"🧠 正在设计分析方案..."):
+            with st.spinner(f"🧠 专家拆解分析思路 ({MODEL_SMART})..."):
                 prompt_plan = f"""
                 你是一位医药行业高级分析师。
                 
@@ -733,8 +736,3 @@ if st.session_state.messages and st.session_state.messages[-1]["role"] == "user"
         else:
             st.info("请询问数据相关问题。")
             st.session_state.messages.append({"role": "assistant", "type": "text", "content": "请询问数据相关问题。"})
-
-
-
-
-
