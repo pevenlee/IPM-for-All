@@ -250,10 +250,10 @@ def get_dataframe_info(df, name="df"):
     info.append("|---|---|---|")
     for col in df.columns:
         dtype = str(df[col].dtype)
-        if df[col].nunique() < 20:
+        if df[col].nunique() < 50:
             sample = list(df[col].dropna().unique())
         else:
-            sample = list(df[col].dropna().unique()[:5])
+            sample = list(df[col].dropna().unique()[:20])
         info.append(f"| {col} | {dtype} | {str(sample)} |")
     return "\n".join(info)
 
@@ -454,17 +454,47 @@ with st.sidebar:
     st.markdown("### 📊 数据概览")
     if df_sales is not None:
         st.success(f"已加载: {FILE_FACT}")
+        
+        # --- [修复] 增强的时间范围识别逻辑 ---
+        target_col = None
+        min_str, max_str = None, None
+        
+        # 1. 优先检查标准日期格式 (datetime64)
         date_cols = df_sales.select_dtypes(include=['datetime64', 'datetime64[ns]']).columns
         if len(date_cols) > 0:
             target_col = date_cols[0]
-            try:
-                min_date = df_sales[target_col].min().strftime('%Y-%m-%d')
-                max_date = df_sales[target_col].max().strftime('%Y-%m-%d')
-                st.info(f"**时间范围 ({target_col})**:\n\n{min_date} 至 {max_date}")
-            except:
-                st.info(f"**时间字段 ({target_col})** 已识别")
+            min_str = df_sales[target_col].min().strftime('%Y-%m-%d')
+            max_str = df_sales[target_col].max().strftime('%Y-%m-%d')
+            
+        # 2. 如果没找到，检查字符串格式的 "YYYYQn" (例如 2024Q1)
         else:
-            st.caption("未检测到标准日期格式字段 (可能为季度/字符型)")
+            time_keywords = ['日期', 'date', 'time', 'period', 'year', 'month', 'quarter', '年', '月', '季']
+            # 遍历所有对象类型的列
+            for col in df_sales.select_dtypes(include=['object', 'string']).columns:
+                # 仅检查列名看似时间的列，或检查所有列
+                if any(k in str(col).lower() for k in time_keywords):
+                    # 取非空样本进行正则匹配
+                    sample = df_sales[col].dropna().astype(str)
+                    if len(sample) > 0:
+                        # 匹配 4位数字 + Q + 1-4
+                        if sample.head(10).str.match(r'^\d{4}[Qq][1-4]$').all():
+                            target_col = col
+                            # 字符串排序对于 YYYYQn 格式是安全的 (2021Q1 < 2025Q3)
+                            sorted_vals = sorted(sample.unique())
+                            min_str = sorted_vals[0]
+                            max_str = sorted_vals[-1]
+                            break
+        
+        # 3. 结果展示
+        if target_col and min_str and max_str:
+            # 如果包含 'Q'，使用波浪号呈现紧凑格式
+            if 'Q' in str(min_str).upper():
+                st.info(f"**时间范围 ({target_col})**:\n\n{min_str}~{max_str}")
+            else:
+                st.info(f"**时间范围 ({target_col})**:\n\n{min_str} 至 {max_str}")
+        else:
+            st.caption("未检测到标准日期或季度字段")
+            
         st.divider()
         st.markdown("**包含字段:**")
         st.dataframe(pd.DataFrame(df_sales.columns, columns=["Fact字段"]), height=150, hide_index=True)
@@ -756,3 +786,4 @@ if st.session_state.messages and st.session_state.messages[-1]["role"] == "user"
             "type": "text", 
             "content": "😵 处理您的问题时出现异常，请尝试重新表述或提问其他内容。"
         })
+
