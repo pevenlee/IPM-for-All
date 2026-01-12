@@ -519,7 +519,7 @@ if st.session_state.messages and st.session_state.messages[-1]["role"] == "user"
             "{user_query}"
             
             【分类标准】
-            1. simple (简单取数): 
+            1. inquiry (简单取数): 
                - 包含明确的“提取”、“查询”、“列出”、“多少”、“数据”等关键词。
                - 用户基于上一轮结果进行简单筛选（如“只看华东的”）。
                
@@ -529,21 +529,21 @@ if st.session_state.messages and st.session_state.messages[-1]["role"] == "user"
                
             3. irrelevant (无关): 非业务数据问题。
             
-            输出 JSON: {{ "type": "simple/analysis/irrelevant" }}
+            输出 JSON: {{ "type": "inquiry/analysis/irrelevant" }}
             """
             resp = safe_generate(client, MODEL_FAST, prompt_router, "application/json")
             if "Error" in resp.text:
                 status.update(label="API 错误", state="error")
                 st.error(f"API 调用失败: {resp.text}")
                 st.stop()
-            intent = clean_json_string(resp.text).get('type', 'simple')
+            intent = clean_json_string(resp.text).get('type', 'inquiry')
             status.update(label=f"意图: {intent.upper()}", state="complete")
 
         shared_ctx = {"df_sales": df_sales.copy(), "df_product": df_product.copy(), "pd": pd, "np": np}
 
         # 2. 简单查询
-        if intent == 'simple':
-            with st.spinner(f"⚡ 正在生成代码 ({MODEL_SMART})..."):
+        if intent == 'inquiry':
+            with st.spinner(f"⚡ 正在设计数据调用逻辑..."):
                 prompt_code = f"""
                 你是一位 Python 专家。
                 
@@ -619,7 +619,7 @@ if st.session_state.messages and st.session_state.messages[-1]["role"] == "user"
                 "np": np
             }
 
-            with st.spinner(f"🧠 专家拆解分析思路 ({MODEL_SMART})..."):
+            with st.spinner(f"🧠 正在拆解分析思路..."):
                 prompt_plan = f"""
                 你是一位医药行业高级分析师。
                 
@@ -698,7 +698,7 @@ if st.session_state.messages and st.session_state.messages[-1]["role"] == "user"
                             # print("Code:", angle['code'])
 
                 if angles_data:
-                    with st.spinner(f"📝 生成最终综述 ({MODEL_SMART})..."):
+                    with st.spinner(f"📝 正在生成最终综述..."):
                         findings = "\n".join([f"[{a['title']}]: {a['explanation']}" for a in angles_data])
                         prompt_final = f"""基于发现回答: "{user_query}"\n【发现】{findings}\n生成 Markdown 总结。"""
                         resp_final = safe_generate(client, MODEL_SMART, prompt_final)
@@ -736,3 +736,4 @@ if st.session_state.messages and st.session_state.messages[-1]["role"] == "user"
         else:
             st.info("请询问数据相关问题。")
             st.session_state.messages.append({"role": "assistant", "type": "text", "content": "请询问数据相关问题。"})
+
