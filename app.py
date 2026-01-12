@@ -27,7 +27,7 @@ MODEL_FAST = "gemini-2.0-flash"       # 路由 & 简单洞察 & 追问生成
 MODEL_SMART = "gemini-3-pro-preview"      # 写代码 & 深度分析
 
 # --- 常量定义 ---
-JOIN_KEY = "药品编码"
+JOIN_KEY = "药品索引"
 LOGO_FILE = "logo.png"
 
 # --- 本地文件名定义 ---
@@ -786,4 +786,5 @@ if st.session_state.messages and st.session_state.messages[-1]["role"] == "user"
             "type": "text", 
             "content": "😵 处理您的问题时出现异常，请尝试重新表述或提问其他内容。"
         })
+
 
