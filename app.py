@@ -31,7 +31,7 @@ JOIN_KEY = "药品编码"
 LOGO_FILE = "logo.png"
 
 # --- 本地文件名定义 ---
-FILE_FACT = "fact.xlsx"      # 销售事实表
+FILE_FACT = "fact.csv"      # 销售事实表
 FILE_DIM = "ipmdata.xlsx"    # 产品维度表
 
 try:
@@ -734,5 +734,6 @@ if st.session_state.messages and st.session_state.messages[-1]["role"] == "user"
         else:
             st.info("请询问数据相关问题。")
             st.session_state.messages.append({"role": "assistant", "type": "text", "content": "请询问数据相关问题。"})
+
 
 
