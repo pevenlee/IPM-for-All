@@ -22,7 +22,7 @@ st.set_page_config(
     initial_sidebar_state="expanded"
 )
 
-# --- 模型配置 ---
+# --- 模型配置 (保持你指定的配置) ---
 MODEL_FAST = "gemini-2.0-flash"       # 路由 & 简单洞察 & 追问生成
 MODEL_SMART = "gemini-3-pro-preview"      # 写代码 & 深度分析
 
@@ -189,13 +189,13 @@ def get_client():
     try: return genai.Client(api_key=FIXED_API_KEY, http_options={'api_version': 'v1beta'})
     except Exception as e: st.error(f"SDK Error: {e}"); return None
 
-# --- [增强版] 数据读取与预处理 ---
+# --- 数据读取与预处理 ---
 @st.cache_data
 def load_local_data(filename):
     if not os.path.exists(filename): return None
     df = None
     
-    # 策略 1: 尝试作为标准 Excel 读取
+    # 策略: 尝试多种编码和引擎
     try:
         df = pd.read_excel(filename, engine='openpyxl')
     except Exception:
@@ -243,7 +243,6 @@ def load_local_data(filename):
         return df
     return None
 
-# --- [核心修复] 增强数据信息提取：把具体值喂给AI ---
 def get_dataframe_info(df, name="df"):
     if df is None: return f"{name}: 未加载"
     info = [f"### 表名: `{name}` ({len(df)} 行)"]
@@ -251,7 +250,6 @@ def get_dataframe_info(df, name="df"):
     info.append("|---|---|---|")
     for col in df.columns:
         dtype = str(df[col].dtype)
-        # 关键修改：如果唯一值少于20个（分类变量），全部列出，防止AI瞎猜“最新批次”是什么
         if df[col].nunique() < 20:
             sample = list(df[col].dropna().unique())
         else:
@@ -275,15 +273,8 @@ def safe_generate(client, model, prompt, mime_type="text/plain"):
     except Exception as e: 
         return type('obj', (object,), {'text': f"Error: {e}"})
 
-# --- [修复版] 智能格式化展示函数 ---
+# --- 智能格式化展示函数 ---
 def format_display_df(df):
-    """
-    智能格式化 DataFrame 用于前端展示：
-    1. 年季 (2024Q1)
-    2. 年份 (2024, 无千分位)
-    3. 比率/均值/单价 (1位小数)
-    4. 常规金额/销量 (整数 + 千分位) [本次修复: 保留整数]
-    """
     if not isinstance(df, pd.DataFrame): return df
     df_fmt = df.copy()
     
@@ -295,14 +286,13 @@ def format_display_df(df):
         if not is_numeric and df_fmt[col].dtype == 'object' and 'id' not in col_str and '编码' not in col_str:
             try:
                 temp = pd.to_numeric(df_fmt[col], errors='coerce')
-                # 只有当转换后非空值占比高时，才认为是数值列
                 if temp.notnull().sum() > 0:
                     is_numeric = True
-                    df_fmt[col] = temp # 关键：赋值回去
+                    df_fmt[col] = temp
             except: pass
 
         if is_numeric:
-            # A. 年份处理 (Year, 年) -> 不加千分位，无小数
+            # A. 年份处理 (Year, 年)
             if col_str in ['year', '年份', '年']:
                 try:
                     df_fmt[col] = df_fmt[col].fillna(0).astype(int).astype(str).replace('0', '-')
@@ -323,7 +313,6 @@ def format_display_df(df):
         
         # 非数值类型的特殊处理
         else:
-            # D. 年季/日期处理
             if pd.api.types.is_datetime64_any_dtype(df_fmt[col]):
                 if any(x in col_str for x in ['季', 'quarter']):
                      df_fmt[col] = df_fmt[col].dt.to_period('Q').astype(str)
@@ -338,7 +327,6 @@ def format_display_df(df):
 
     return df_fmt
 
-# --- [修复版] normalize_result 永不返回 None ---
 def normalize_result(res):
     if res is None: return pd.DataFrame()
     if isinstance(res, pd.DataFrame): return res
@@ -353,7 +341,6 @@ def normalize_result(res):
         except: return pd.DataFrame(res, columns=['结果'])
     return pd.DataFrame([str(res)], columns=['Result'])
 
-# --- [修复版] safe_check_empty 增加类型检查 ---
 def safe_check_empty(df):
     if df is None: return True
     if not isinstance(df, pd.DataFrame): return True
@@ -385,9 +372,52 @@ def render_protocol_card(summary):
     </div>
     """, unsafe_allow_html=True)
 
-# [关键修复] 回调函数，专门用于处理动态按钮点击，防止rerun时丢失状态
 def handle_followup(question):
     st.session_state.messages.append({"role": "user", "type": "text", "content": question})
+
+# --- [新增] 安全执行代码函数 (核心修复 1) ---
+def safe_exec_code(code_str, context):
+    """
+    安全执行代码并捕获 result
+    """
+    # 确保基础库在上下文中
+    context.update({"pd": pd, "np": np, "st": st})
+    # 强制初始化 result 为 None
+    context['result'] = None
+    
+    # 记录执行前的变量，用于后续启发式查找
+    pre_vars = set(context.keys())
+    
+    try:
+        # 执行代码
+        exec(code_str, context)
+        
+        # 1. 优先获取 result 变量
+        if context.get('result') is not None:
+            return context['result']
+            
+        # 2. 兜底：如果没找到 result，寻找最后生成的 DataFrame
+        post_vars = set(context.keys())
+        new_vars = post_vars - pre_vars
+        
+        # 倒序查找新增变量中的 DataFrame
+        # 排除系统变量和基础库
+        candidates = []
+        for var in new_vars:
+            if var not in ["pd", "np", "st", "__builtins__", "result"]:
+                val = context[var]
+                if isinstance(val, (pd.DataFrame, pd.Series)):
+                    candidates.append(val)
+        
+        if candidates:
+            # 返回最后一个生成的 DataFrame
+            return candidates[-1]
+            
+        return None
+        
+    except Exception as e:
+        # 将异常向上抛出，由外层捕获处理
+        raise e
 
 # ================= 4. 页面渲染 =================
 
@@ -478,146 +508,38 @@ if query:
 
 # --- Core Logic ---
 if st.session_state.messages and st.session_state.messages[-1]["role"] == "user":
-    user_query = st.session_state.messages[-1]["content"]
-    history_str = get_history_context(limit=5)
+    
+    # [新增] 核心修复 5: 全局 Try-Except 实现错误自愈
+    try:
+        user_query = st.session_state.messages[-1]["content"]
+        history_str = get_history_context(limit=5)
 
-    with st.chat_message("assistant"):
-        if df_sales is None or df_product is None:
-            st.error(f"请确保根目录下存在 {FILE_FACT} 和 {FILE_DIM}")
-            st.stop()
-
-        context_info = f"""
-        {get_dataframe_info(df_sales, "df_sales")}
-        {get_dataframe_info(df_product, "df_product")}
-        关联键: `{JOIN_KEY}`
-        
-        【重要业务知识库】
-        1. 涉及“内资/外资”时，请使用 `df_product['企业类型']` 字段。
-        
-        【时间计算强制规则】
-        1. **同比完整性校验**：在计算同比（Year-over-Year）时，必须检查基准期数据是否完整。
-           - 场景：如果数据起始于 2023Q4，而2024年有全年数据。
-           - 禁止：绝对禁止计算 "2024全年 vs 2023全年" 的同比。
-           - 替代：应自动调整为 "2024Q4 vs 2023Q4" 或仅展示最新完整周期。
-        2. **市场规模默认口径**：当用户询问“市场规模”且未明确指定时间范围（如“2023年”、“上季度”）时：
-           - 默认行为：必须使用**最新滚动年 (MAT)** 也就是数据中最新的连续4个季度之和。
-        """
-
-        # 1. 意图识别
-        with st.status("🔄 思考中...", expanded=False) as status:
-            prompt_router = f"""
-            你是一个精准的意图分类专家。请基于用户问题和历史对话判断意图。
-            
-            【历史对话】
-            {history_str}
-            
-            【当前用户问题】
-            "{user_query}"
-            
-            【分类标准】
-            1. inquiry (简单取数): 
-               - 包含明确的“提取”、“查询”、“列出”、“多少”、“数据”等关键词。
-               - 用户基于上一轮结果进行简单筛选（如“只看华东的”）。
-               
-            2. analysis (深度分析): 
-               - 询问“为什么”、“原因”、“趋势”、“表现如何”、“评价”。
-               - 需要多维度拆解、归因分析。
-               
-            3. irrelevant (无关): 非业务数据问题。
-            
-            输出 JSON: {{ "type": "inquiry/analysis/irrelevant" }}
-            """
-            resp = safe_generate(client, MODEL_FAST, prompt_router, "application/json")
-            if "Error" in resp.text:
-                status.update(label="API 错误", state="error")
-                st.error(f"API 调用失败: {resp.text}")
+        with st.chat_message("assistant"):
+            if df_sales is None or df_product is None:
+                st.error(f"请确保根目录下存在 {FILE_FACT} 和 {FILE_DIM}")
                 st.stop()
-            intent = clean_json_string(resp.text).get('type', 'inquiry')
-            status.update(label=f"意图: {intent.upper()}", state="complete")
 
-        shared_ctx = {"df_sales": df_sales.copy(), "df_product": df_product.copy(), "pd": pd, "np": np}
-
-        # 2. 简单查询
-        if intent == 'inquiry':
-            with st.spinner(f"⚡ 正在设计数据调用逻辑..."):
-                prompt_code = f"""
-                你是一位医药行业的 Python 专家。
-                
-                【历史对话】(用于理解指代)
-                {history_str}
-                
-                【当前用户问题】
-                "{user_query}"
-                
-                【数据上下文】 {context_info}
-                
-                【指令】 
-                1. 严格按用户要求提取字段。
-                2. 使用 `pd.merge` 关联两表 (除非用户只查单表)。
-                3. **重要**: 确保所有使用的变量（如 market_share）都在代码中明确定义。不要使用未定义的变量。
-                4. **绝对禁止**导入 IPython 或使用 display() 函数。
-                5. 禁止使用 df.columns = [...] 强行改名，请使用 df.rename()。
-                6. **避免 'ambiguous' 错误**：如果 index name 与 column name 冲突，请在 reset_index() 前先使用 `df.index.name = None` 或重命名索引。
-                7. 结果存为 `result`。
-                
-                【摘要生成规则 (Summary)】
-                - scope (范围): 数据的筛选范围。
-                - metrics (指标): 用户查询的核心指标。
-                - key_match (关键匹配): **必须说明**提取了用户什么词，去匹配了哪个列。例如："提取用户词 'K药' -> 模糊匹配 '商品名' 列"。
-                - logic (加工逻辑): 简述筛选和计算步骤，严禁提及“表关联”、“Merge”等技术术语。
-                
-                输出 JSON: {{ "summary": {{ "intent": "简单取数", "scope": "...", "metrics": "...", "key_match": "...", "logic": "..." }}, "code": "..." }}
-                """
-                resp_code = safe_generate(client, MODEL_SMART, prompt_code, "application/json")
-                plan = clean_json_string(resp_code.text)
+            context_info = f"""
+            {get_dataframe_info(df_sales, "df_sales")}
+            {get_dataframe_info(df_product, "df_product")}
+            关联键: `{JOIN_KEY}`
             
-            if plan:
-                s = plan.get('summary', {})
-                render_protocol_card(s)
-                st.session_state.messages.append({"role": "assistant", "type": "text", "content": f"**执行协议**: {s.get('intent', '-')}"})
+            【重要业务知识库】
+            1. 涉及“内资/外资”时，请使用 `df_product['企业类型']` 字段。
+            
+            【时间计算强制规则】
+            1. **同比完整性校验**：在计算同比（Year-over-Year）时，必须检查基准期数据是否完整。
+               - 场景：如果数据起始于 2023Q4，而2024年有全年数据。
+               - 禁止：绝对禁止计算 "2024全年 vs 2023全年" 的同比。
+               - 替代：应自动调整为 "2024Q4 vs 2023Q4" 或仅展示最新完整周期。
+            2. **市场规模默认口径**：当用户询问“市场规模”且未明确指定时间范围（如“2023年”、“上季度”）时：
+               - 默认行为：必须使用**最新滚动年 (MAT)** 也就是数据中最新的连续4个季度之和。
+            """
 
-                if 'result' in shared_ctx: del shared_ctx['result']
-                
-                try:
-                    exec(plan['code'], shared_ctx)
-                    res_raw = shared_ctx.get('result')
-                    res_df = normalize_result(res_raw)
-                    
-                    if not safe_check_empty(res_df):
-                        formatted_df = format_display_df(res_df)
-                        st.dataframe(formatted_df, use_container_width=True)
-                        st.session_state.messages.append({"role": "assistant", "type": "df", "content": formatted_df})
-                    else:
-                        st.warning("⚠️ 结果为空，尝试模糊搜索...")
-                        fallback_code = f"result = df_product[df_product.astype(str).apply(lambda x: x.str.contains('{user_query[:2]}', case=False, na=False)).any(axis=1)].head(10)"
-                        try:
-                            exec(fallback_code, shared_ctx)
-                            res_fallback = normalize_result(shared_ctx.get('result'))
-                            if not safe_check_empty(res_fallback):
-                                st.dataframe(res_fallback)
-                                st.session_state.messages.append({"role": "assistant", "type": "df", "content": res_fallback})
-                            else:
-                                msg = "在产品库中也未找到相关信息。"
-                                st.error(msg)
-                                st.session_state.messages.append({"role": "assistant", "type": "text", "content": msg})
-                        except:
-                            st.error("查询无结果。")
-                except Exception as e:
-                    st.error(f"代码错误: {e}")
-
-        # 3. 深度分析
-        elif intent == 'analysis':
-            # [关键修复] 使用 copy() 防止数据在分析过程中被意外修改污染全局缓存
-            shared_ctx = {
-                "df_sales": df_sales.copy(), 
-                "df_product": df_product.copy(), 
-                "pd": pd, 
-                "np": np
-            }
-
-            with st.spinner(f"🧠 正在拆解分析思路..."):
-                prompt_plan = f"""
-                你是一位医药行业高级分析师。
+            # 1. 意图识别
+            with st.status("🔄 思考中...", expanded=False) as status:
+                prompt_router = f"""
+                你是一个精准的意图分类专家。请基于用户问题和历史对话判断意图。
                 
                 【历史对话】
                 {history_str}
@@ -625,115 +547,212 @@ if st.session_state.messages and st.session_state.messages[-1]["role"] == "user"
                 【当前用户问题】
                 "{user_query}"
                 
-                【数据上下文】 {context_info}
+                【分类标准】
+                1. inquiry (简单取数): 
+                   - 包含明确的“提取”、“查询”、“列出”、“多少”、“数据”等关键词。
+                   - 用户基于上一轮结果进行简单筛选（如“只看华东的”）。
+                   
+                2. analysis (深度分析): 
+                   - 询问“为什么”、“原因”、“趋势”、“表现如何”、“评价”。
+                   - 需要多维度拆解、归因分析。
+                   
+                3. irrelevant (无关): 非业务数据问题。
                 
-                请拆解 2-4 个分析角度。每个角度的代码块将被依次执行。
-                **注意**：
-                1. 代码块之间共享上下文。如果角度2需要用到角度1计算的变量，确保变量名一致。
-                2. **绝对禁止**导入 IPython 或使用 display() 函数。
-                3. **避免 'ambiguous' 错误**：如果 index name 与 column name 冲突，请在 reset_index() 前先使用 `df.index.name = None` 或重命名索引。
-                4. **避免 'Length mismatch' 错误**：禁止使用 `df.columns = [...]` 强行改名，必须使用 `df.rename(columns={{...}})`。
-                5. 在代码开头，先检查前置依赖的变量是否存在，例如 `if 'df_filtered' not in locals(): result = pd.DataFrame()`。
-                6. [重要] 每个角度的最终结果必须赋值给变量 `result` (例如 `result = df_grouped`)，否则无法展示。
-                
-                输出 JSON: {{ "intent_analysis": "...", "angles": [ {{ "title": "...", "desc": "...", "summary": {{ "intent": "...", "scope": "...", "metrics": "...", "key_match": "...", "logic": "..." }}, "code": "..." }} ] }}
+                输出 JSON: {{ "type": "inquiry/analysis/irrelevant" }}
                 """
-                resp_plan = safe_generate(client, MODEL_SMART, prompt_plan, "application/json")
-                plan_json = clean_json_string(resp_plan.text)
-            
-            if plan_json:
-                intro = f"### 1. 意图深度解析\n{plan_json.get('intent_analysis')}"
-                st.markdown(intro)
-                st.session_state.messages.append({"role": "assistant", "type": "text", "content": intro})
-                
-                angles_data = []
-                st.markdown('<div class="step-header">2. 多维分析报告</div>', unsafe_allow_html=True)
-                
-                for angle in plan_json.get('angles', []):
-                    with st.container():
-                        st.markdown(f"**{angle['title']}**: {angle['desc']}")
-                        
-                        if 'summary' in angle:
-                            render_protocol_card(angle['summary'])
-                        
-                        # [智能容错] 预设 result=None, 并记录现有变量防止 NameError
-                        shared_ctx['result'] = None
-                        pre_vars = set(shared_ctx.keys())
-                        
-                        try:
-                            exec(angle['code'], shared_ctx)
-                            res_raw = shared_ctx.get('result')
-                            
-                            # [智能容错] 如果 result 仍为空，自动扫描新生成的 DataFrame
-                            if res_raw is None:
-                                post_vars = set(shared_ctx.keys())
-                                new_vars = post_vars - pre_vars
-                                candidates = [v for v in new_vars if isinstance(shared_ctx[v], pd.DataFrame)]
-                                if candidates: 
-                                    res_raw = shared_ctx[candidates[-1]]
+                resp = safe_generate(client, MODEL_FAST, prompt_router, "application/json")
+                if "Error" in resp.text:
+                    status.update(label="API 错误", state="error")
+                    st.error(f"API 调用失败: {resp.text}")
+                    st.stop()
+                intent = clean_json_string(resp.text).get('type', 'inquiry')
+                status.update(label=f"意图: {intent.upper()}", state="complete")
 
-                            res_df = normalize_result(res_raw)
+            # 2. 简单查询
+            if intent == 'inquiry':
+                with st.spinner(f"⚡ 正在设计数据调用逻辑..."):
+                    prompt_code = f"""
+                    你是一位医药行业的 Python 专家。
+                    
+                    【历史对话】(用于理解指代)
+                    {history_str}
+                    
+                    【当前用户问题】
+                    "{user_query}"
+                    
+                    【数据上下文】 {context_info}
+                    
+                    【指令】 
+                    1. 严格按用户要求提取字段。
+                    2. 使用 `pd.merge` 关联两表 (除非用户只查单表)。
+                    3. **重要**: 确保所有使用的变量（如 market_share）都在代码中明确定义。不要使用未定义的变量。
+                    4. **绝对禁止**导入 IPython 或使用 display() 函数。
+                    5. 禁止使用 df.columns = [...] 强行改名，请使用 df.rename()。
+                    6. **避免 'ambiguous' 错误**：如果 index name 与 column name 冲突，请在 reset_index() 前先使用 `df.index.name = None` 或重命名索引。
+                    7. 结果必须赋值给变量 `result`。
+                    
+                    【摘要生成规则 (Summary)】
+                    - scope (范围): 数据的筛选范围。
+                    - metrics (指标): 用户查询的核心指标。
+                    - key_match (关键匹配): **必须说明**提取了用户什么词，去匹配了哪个列。例如："提取用户词 'K药' -> 模糊匹配 '商品名' 列"。
+                    - logic (加工逻辑): 简述筛选和计算步骤，严禁提及“表关联”、“Merge”等技术术语。
+                    
+                    输出 JSON: {{ "summary": {{ "intent": "简单取数", "scope": "...", "metrics": "...", "key_match": "...", "logic": "..." }}, "code": "..." }}
+                    """
+                    resp_code = safe_generate(client, MODEL_SMART, prompt_code, "application/json")
+                    plan = clean_json_string(resp_code.text)
+                
+                if plan:
+                    s = plan.get('summary', {})
+                    render_protocol_card(s)
+                    st.session_state.messages.append({"role": "assistant", "type": "text", "content": f"**执行协议**: {s.get('intent', '-')}"})
+
+                    # [应用] 核心修复 1: 使用 safe_exec_code
+                    try:
+                        exec_ctx = {"df_sales": df_sales, "df_product": df_product}
+                        res_raw = safe_exec_code(plan['code'], exec_ctx)
+                        res_df = normalize_result(res_raw)
+                        
+                        if not safe_check_empty(res_df):
+                            formatted_df = format_display_df(res_df)
+                            st.dataframe(formatted_df, use_container_width=True)
+                            st.session_state.messages.append({"role": "assistant", "type": "df", "content": formatted_df})
+                        else:
+                            st.warning("⚠️ 结果为空，尝试模糊搜索...")
+                            fallback_code = f"result = df_product[df_product.astype(str).apply(lambda x: x.str.contains('{user_query[:2]}', case=False, na=False)).any(axis=1)].head(10)"
+                            try:
+                                res_fallback = safe_exec_code(fallback_code, exec_ctx) # 复用 safe_exec
+                                res_fallback = normalize_result(res_fallback)
+                                if not safe_check_empty(res_fallback):
+                                    st.dataframe(res_fallback)
+                                    st.session_state.messages.append({"role": "assistant", "type": "df", "content": res_fallback})
+                                else:
+                                    msg = "在产品库中也未找到相关信息。"
+                                    st.error(msg)
+                                    st.session_state.messages.append({"role": "assistant", "type": "text", "content": msg})
+                            except:
+                                st.error("查询无结果。")
+                    except Exception as e:
+                        st.error(f"代码错误: {e}")
+
+            # 3. 深度分析
+            elif intent == 'analysis':
+                # 初始化共享上下文 (保持共享以便后续步骤复用变量)
+                shared_ctx = {
+                    "df_sales": df_sales.copy(), 
+                    "df_product": df_product.copy(), 
+                }
+
+                with st.spinner(f"🧠 正在拆解分析思路..."):
+                    prompt_plan = f"""
+                    你是一位医药行业高级分析师。
+                    
+                    【历史对话】
+                    {history_str}
+                    
+                    【当前用户问题】
+                    "{user_query}"
+                    
+                    【数据上下文】 {context_info}
+                    
+                    请拆解 2-4 个分析角度。每个角度的代码块将被依次执行。
+                    **注意**:
+                    1. 代码块之间共享上下文。如果角度2需要用到角度1计算的变量，确保变量名一致。
+                    2. **绝对禁止**导入 IPython 或使用 display() 函数。
+                    3. **避免 'ambiguous' 错误**：如果 index name 与 column name 冲突，请在 reset_index() 前先使用 `df.index.name = None` 或重命名索引。
+                    4. **避免 'Length mismatch' 错误**：禁止使用 `df.columns = [...]` 强行改名，必须使用 `df.rename(columns={{...}})`。
+                    5. 在代码开头，先检查前置依赖的变量是否存在，例如 `if 'df_filtered' not in locals(): result = pd.DataFrame()`。
+                    6. [重要] 每个角度的最终结果必须赋值给变量 `result` (例如 `result = df_grouped`)，否则无法展示。
+                    7. [数据安全] 如果需要修改 `df_sales`，请先使用 `df = df_sales.copy()`，严禁直接修改原始数据框。
+                    
+                    输出 JSON: {{ "intent_analysis": "...", "angles": [ {{ "title": "...", "desc": "...", "summary": {{ "intent": "...", "scope": "...", "metrics": "...", "key_match": "...", "logic": "..." }}, "code": "..." }} ] }}
+                    """
+                    resp_plan = safe_generate(client, MODEL_SMART, prompt_plan, "application/json")
+                    plan_json = clean_json_string(resp_plan.text)
+                
+                if plan_json:
+                    intro = f"### 1. 意图深度解析\n{plan_json.get('intent_analysis')}"
+                    st.markdown(intro)
+                    st.session_state.messages.append({"role": "assistant", "type": "text", "content": intro})
+                    
+                    angles_data = []
+                    st.markdown('<div class="step-header">2. 多维分析报告</div>', unsafe_allow_html=True)
+                    
+                    for angle in plan_json.get('angles', []):
+                        with st.container():
+                            st.markdown(f"**{angle['title']}**: {angle['desc']}")
                             
-                            if not safe_check_empty(res_df):
-                                formatted_df = format_display_df(res_df)
-                                st.dataframe(formatted_df, use_container_width=True)
-                                st.session_state.messages.append({"role": "assistant", "type": "text", "content": f"**{angle['title']}**"})
-                                st.session_state.messages.append({"role": "assistant", "type": "df", "content": formatted_df})
+                            if 'summary' in angle:
+                                render_protocol_card(angle['summary'])
+                            
+                            try:
+                                # [应用] 核心修复 2: 使用 safe_exec_code 并处理 Analysis 循环逻辑
+                                # safe_exec_code 内部会强制将 result 设为 None，避免污染
+                                res_raw = safe_exec_code(angle['code'], shared_ctx)
+                                res_df = normalize_result(res_raw)
                                 
-                                prompt_mini = f"简要解读数据 (50字内):\n{res_df.to_string()}"
-                                resp_mini = safe_generate(client, MODEL_FAST, prompt_mini)
-                                explanation = resp_mini.text
-                                st.markdown(f'<div class="mini-insight">💡 {explanation}</div>', unsafe_allow_html=True)
-                                angles_data.append({"title": angle['title'], "explanation": explanation})
-                            else:
-                                st.warning(f"角度【{angle['title']}】无数据 (可能原因：筛选条件过严或代码未正确赋值 result)")
-                        except Exception as e:
-                            st.error(f"计算错误: {e}")
-                            # 打印错误代码以便调试
-                            # print(f"Error in angle {angle['title']}: {e}")
-                            # print("Code:", angle['code'])
+                                if not safe_check_empty(res_df):
+                                    formatted_df = format_display_df(res_df)
+                                    st.dataframe(formatted_df, use_container_width=True)
+                                    st.session_state.messages.append({"role": "assistant", "type": "text", "content": f"**{angle['title']}**"})
+                                    st.session_state.messages.append({"role": "assistant", "type": "df", "content": formatted_df})
+                                    
+                                    prompt_mini = f"简要解读数据 (50字内):\n{res_df.to_string()}"
+                                    resp_mini = safe_generate(client, MODEL_FAST, prompt_mini)
+                                    explanation = resp_mini.text
+                                    st.markdown(f'<div class="mini-insight">💡 {explanation}</div>', unsafe_allow_html=True)
+                                    angles_data.append({"title": angle['title'], "explanation": explanation})
+                                else:
+                                    st.warning(f"角度【{angle['title']}】无数据 (可能原因：筛选条件过严或代码未正确赋值 result)")
+                            except Exception as e:
+                                st.error(f"计算错误: {e}")
 
-                if angles_data:
-                    with st.spinner(f"📝 正在生成最终综述..."):
-                        findings = "\n".join([f"[{a['title']}]: {a['explanation']}" for a in angles_data])
-                        prompt_final = f"""基于发现回答: "{user_query}"\n【发现】{findings}\n生成 Markdown 总结。"""
-                        resp_final = safe_generate(client, MODEL_SMART, prompt_final)
-                        insight = resp_final.text
-                        st.markdown(f'<div class="insight-box">{insight}</div>', unsafe_allow_html=True)
-                        st.session_state.messages.append({"role": "assistant", "type": "text", "content": f"### 总结\n{insight}"})
+                    if angles_data:
+                        with st.spinner(f"📝 正在生成最终综述..."):
+                            findings = "\n".join([f"[{a['title']}]: {a['explanation']}" for a in angles_data])
+                            prompt_final = f"""基于发现回答: "{user_query}"\n【发现】{findings}\n生成 Markdown 总结。"""
+                            resp_final = safe_generate(client, MODEL_SMART, prompt_final)
+                            insight = resp_final.text
+                            st.markdown(f'<div class="insight-box">{insight}</div>', unsafe_allow_html=True)
+                            st.session_state.messages.append({"role": "assistant", "type": "text", "content": f"### 总结\n{insight}"})
 
-                    # === Step 3. 智能追问推荐 (使用 on_click 修复版) ===
-                    with st.spinner("🤔 正在思考后续追问..."):
-                        prompt_next = f"""
-                        基于以下分析结论和数据结构，推荐 2 个用户可能感兴趣的后续深度追问问题。
-                        确保问题可以通过现有数据回答。简洁明了，不要编号。
+                        # === Step 3. 智能追问推荐 ===
+                        with st.spinner("🤔 正在思考后续追问..."):
+                            prompt_next = f"""
+                            基于以下分析结论和数据结构，推荐 2 个用户可能感兴趣的后续深度追问问题。
+                            确保问题可以通过现有数据回答。简洁明了，不要编号。
 
-                        【当前结论】
-                        {insight}
+                            【当前结论】
+                            {insight}
 
-                        【数据结构】
-                        {context_info}
+                            【数据结构】
+                            {context_info}
 
-                        输出 JSON 列表: ["问题1", "问题2"]
-                        """
-                        resp_next = safe_generate(client, MODEL_FAST, prompt_next, "application/json")
-                        next_questions = clean_json_string(resp_next.text)
+                            输出 JSON 列表: ["问题1", "问题2"]
+                            """
+                            resp_next = safe_generate(client, MODEL_FAST, prompt_next, "application/json")
+                            next_questions = clean_json_string(resp_next.text)
 
-                    # 渲染追问按钮
-                    if isinstance(next_questions, list) and len(next_questions) > 0:
-                        st.markdown("### 🧐 还可以继续追问")
-                        c1, c2 = st.columns(2)
-                        
-                        # [关键修复] 使用 on_click 回调，确保点击事件能穿透 Rerun
-                        c1.button(f"👉 {next_questions[0]}", use_container_width=True, on_click=handle_followup, args=(next_questions[0],))
+                        # 渲染追问按钮
+                        if isinstance(next_questions, list) and len(next_questions) > 0:
+                            st.markdown("### 🧐 还可以继续追问")
+                            c1, c2 = st.columns(2)
                             
-                        if len(next_questions) > 1:
-                            c2.button(f"👉 {next_questions[1]}", use_container_width=True, on_click=handle_followup, args=(next_questions[1],))
-        else:
-            st.info("请询问数据相关问题。")
-            st.session_state.messages.append({"role": "assistant", "type": "text", "content": "请询问数据相关问题。"})
+                            c1.button(f"👉 {next_questions[0]}", use_container_width=True, on_click=handle_followup, args=(next_questions[0],))
+                                
+                            if len(next_questions) > 1:
+                                c2.button(f"👉 {next_questions[1]}", use_container_width=True, on_click=handle_followup, args=(next_questions[1],))
+            else:
+                st.info("请询问数据相关问题。")
+                st.session_state.messages.append({"role": "assistant", "type": "text", "content": "请询问数据相关问题。"})
 
-
-
-
-
+    except Exception as e:
+        # [应用] 核心修复 5: 错误自愈逻辑
+        # 捕获所有未处理的异常，打印友好提示，并写入一条助手消息结束对话流
+        st.error(f"⚠️ 系统遇到未知错误: {str(e)}")
+        st.caption("已自动重置对话状态，请尝试重新提问。")
+        st.session_state.messages.append({
+            "role": "assistant", 
+            "type": "text", 
+            "content": "😵 处理您的问题时出现异常，请尝试重新表述或提问其他内容。"
+        })
