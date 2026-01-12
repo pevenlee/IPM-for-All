@@ -494,8 +494,6 @@ if st.session_state.messages and st.session_state.messages[-1]["role"] == "user"
         
         【重要业务知识库】
         1. 涉及“内资/外资”时，请使用 `df_product['企业类型']` 字段。
-        2. 涉及“PDx”、“PD-1”、“PD-L1”时，请筛选 `ATC4描述` 或 `通用名` 包含 'PD-1' 或 'PD-L1' (不区分大小写)。
-        3. “K药”对应通用名“帕博利珠单抗”；“O药”对应“纳武利尤单抗”；“I药”对应“度伐利尤单抗”。
         
         【时间计算强制规则】
         1. **同比完整性校验**：在计算同比（Year-over-Year）时，必须检查基准期数据是否完整。
@@ -735,6 +733,7 @@ if st.session_state.messages and st.session_state.messages[-1]["role"] == "user"
         else:
             st.info("请询问数据相关问题。")
             st.session_state.messages.append({"role": "assistant", "type": "text", "content": "请询问数据相关问题。"})
+
 
 
 
